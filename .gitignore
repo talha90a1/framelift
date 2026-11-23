@@ -1,0 +1,16 @@
+.build/
+build/
+third_party/
+.venv/
+dist/
+*.xcodeproj/
+.DS_Store
+# C/C++ core test binaries
+*.o
+core_smoke
+core_session_test
+core_stress
+core_fuzz
+
+# Local tool worktrees
+.claude/worktrees/

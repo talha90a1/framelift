@@ -1,0 +1,133 @@
+name: Bug report
+description: Report a problem with Framelift.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please fill in every field you can.
+        Do not report security problems here. See SECURITY.md instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Describe the problem. Include error messages exactly as shown.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Connect to the PS5
+        2. Start the game
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Framelift version or commit
+      description: The app version from Framelift › About Framelift, or the output of `git rev-parse --short HEAD` if you built it yourself.
+      placeholder: 0.1.0 (abc1234)
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: macOS 27.0
+    validations:
+      required: true
+
+  - type: input
+    id: mac
+    attributes:
+      label: Mac model and chip
+      placeholder: MacBook Air 13-inch, M4
+    validations:
+      required: true
+
+  - type: input
+    id: display
+    attributes:
+      label: Display
+      description: Model, refresh rate, and whether it is built-in or external (and how it is connected).
+      placeholder: Built-in, 120 Hz / LG C3 TV, 60 Hz, external over HDMI
+    validations:
+      required: true
+
+  - type: input
+    id: network
+    attributes:
+      label: Network
+      description: How the Mac and the PS5 are connected.
+      placeholder: "Mac: Wi-Fi 6 (5 GHz). PS5: Ethernet"
+    validations:
+      required: true
+
+  - type: input
+    id: ps5
+    attributes:
+      label: PS5 model and system software version
+      placeholder: PS5 Slim, 25.02-11.00.00
+    validations:
+      required: true
+
+  - type: input
+    id: game
+    attributes:
+      label: Game
+      description: The game or screen where it happens, for example the PS5 home screen.
+
+  - type: checkboxes
+    id: defaults
+    attributes:
+      label: Settings
+      options:
+        - label: All settings are at their defaults.
+
+  - type: textarea
+    id: settings-changed
+    attributes:
+      label: Settings changed from defaults
+      description: Leave empty if all settings are at their defaults.
+      placeholder: "Bitrate: 30 Mbps. Display buffers: 2."
+
+  - type: checkboxes
+    id: logs-confirmed
+    attributes:
+      label: Logs
+      options:
+        - label: I enabled Debug logs, reproduced the problem, and attached the zip from Settings › Debug › Export Logs…
+          required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log zip
+      description: |
+        1. Turn on Settings › Debug › Debug logs.
+        2. Start a new stream and reproduce the problem.
+        3. Open Settings › Debug › Export Logs… and save the zip.
+        4. Drag the zip into this field to attach it.
+        Pairing keys and sign-in tokens are never logged. The export replaces IP and MAC addresses, names, your PSN IDs and paths with placeholders. It keeps timings, settings and a system report (macOS version, Mac model, displays, network type, controller).
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, videos, or anything else that helps.

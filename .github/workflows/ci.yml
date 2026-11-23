@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    # Developed and tested with Xcode and the macOS 27 SDK on Apple Silicon. If GitHub's macos-latest
+    # image has an older SDK and the build fails for that reason, switch runs-on to a newer image or a
+    # self-hosted runner that has it (see CONTRIBUTING.md).
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select the newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          echo "DEVELOPER_DIR=$XCODE/Contents/Developer" >> "$GITHUB_ENV"
+          xcodebuild -version
+          echo "macOS SDK $(xcrun --sdk macosx --show-sdk-version)"
+
+      # build_chiaki.sh installs these too; Package.swift also needs the openssl@3 headers on cache hits.
+      - name: Install Homebrew dependencies
+        run: brew install cmake protobuf miniupnpc libevent json-c opus openssl@3
+
+      - name: Restore libchiaki build
+        id: chiaki-cache
+        uses: actions/cache@v6
+        with:
+          path: build/chiaki-dist
+          key: chiaki-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build_chiaki.sh', 'scripts/patches/**') }}
+
+      - name: Build libchiaki
+        if: steps.chiaki-cache.outputs.cache-hit != 'true'
+        run: scripts/build_chiaki.sh
+
+      - name: Build
+        run: swift build -c release
+
+      - name: Test
+        run: swift test

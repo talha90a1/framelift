@@ -1,0 +1,102 @@
+Framelift 0110: QoS marking and a larger receive buffer on the Takion socket.
+
+Source: P5M patches/0006-takion-socket-qos.patch (DSCP AF41), the receive-buffer half of
+patches/0009-dualsense-haptics-and-receive-buffer.patch (1 MB SO_RCVBUF) and the
+SO_NET_SERVICE_TYPE hunk of patches/0052-protocolo-do-mac-takion-v20-botao-preso-fec-e-psn.patch.
+
+- SO_NET_SERVICE_TYPE = NET_SERVICE_TYPE_VI (macOS interactive video / Wi-Fi video access category).
+- DSCP AF41 via IP_TOS (IPv4) or IPV6_TCLASS (IPv6), family read from the socket.
+- SO_RCVBUF 1 MB (chiaki asked for a_rwnd, 100 KB); a_rwnd itself is unchanged.
+- Dropped: SO_PRIORITY (Linux/Android only) and P5M's WARNING-level success logs (Android logcat).
+Every option is a request; a refusal is logged and never fails the connection.
+
+Ported from P5M (https://github.com/beecrepaldi-afk/P5M), AGPL-3.0, by beecrepaldi-afk,
+which is built on chiaki-ng (https://github.com/streetpea/chiaki-ng) and Chiaki by Florian Märkl.
+Adapted for Framelift against chiaki-ng 43728af2e639fecb8a7af1cd68c29820a40de973 (on top of
+Veyra's 0002 metadata patch and 0100). P5M patches against chiaki-ng 6547d8ae (2026-07-04)
+plus its own series; the pinned commit is 135 upstream commits later. Portuguese comments translated.
+License: AGPL-3.0-only (LicenseRef-AGPL-3.0-only-OpenSSL, like the files it changes).
+
+diff --git a/lib/src/takion.c b/lib/src/takion.c
+index 9916009..0233f0f 100644
+--- a/lib/src/takion.c
++++ b/lib/src/takion.c
+@@ -438,12 +438,78 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
+ 		{
+ 			ret = err;
+ 			goto error_sock;
+ 		}
+ 	}
+ 
++	// Veyra for Mac, from P5M patches 0006, 0009 and 0052 (beecrepaldi-afk/P5M, AGPL-3.0):
++	// QoS marking and a larger receive buffer on the Takion socket.
++	//
++	// DSCP AF41 (34) is the video class: a WMM access point queues it in the video access
++	// category, meant for continuous delay-sensitive traffic. EF/voice was not chosen on
++	// purpose: it has higher priority but small bursts, and ~25 Mbps of bursty video there
++	// would trade delay for loss. All of these are requests the driver or the access point
++	// may ignore, so no failure here stops the connection; it is only logged.
++	{
++		// Take the address family from the socket, not from info->sa: when a socket is
++		// handed in (PSN holepunch), info->sa and info->sa_len are never filled in.
++		// IPv4 is the right guess if getsockname fails (the console only accepts IPv4).
++		struct sockaddr_storage local_addr;
++		socklen_t local_addr_len = sizeof(local_addr);
++		int family = AF_INET;
++		if(getsockname(takion->sock, (struct sockaddr *)&local_addr, &local_addr_len) == 0)
++			family = local_addr.ss_family;
++
++#ifdef SO_NET_SERVICE_TYPE
++		// macOS: the FaceTime class. The system queues the socket as interactive video and
++		// the Wi-Fi driver gives it the video access category; IP_TOS below then pins the
++		// DSCP to AF41.
++		const int service_type = NET_SERVICE_TYPE_VI;
++		if(setsockopt(takion->sock, SOL_SOCKET, SO_NET_SERVICE_TYPE,
++				(const CHIAKI_SOCKET_BUF_TYPE)&service_type, sizeof(service_type)) < 0)
++			CHIAKI_LOGW(takion->log, "Takion: net service type interactive video refused by the system");
++		else
++			CHIAKI_LOGI(takion->log, "Takion: socket set to net service type interactive video");
++#endif
++		const int dscp_af41 = 34 << 2;
++		int qr;
++		if(family == AF_INET6)
++			qr = setsockopt(takion->sock, IPPROTO_IPV6, IPV6_TCLASS,
++					(const CHIAKI_SOCKET_BUF_TYPE)&dscp_af41, sizeof(dscp_af41));
++		else
++			qr = setsockopt(takion->sock, IPPROTO_IP, IP_TOS,
++					(const CHIAKI_SOCKET_BUF_TYPE)&dscp_af41, sizeof(dscp_af41));
++		if(qr < 0)
++			CHIAKI_LOGW(takion->log, "Takion: DSCP AF41 refused by the system");
++		else
++			CHIAKI_LOGI(takion->log, "Takion: socket marked DSCP AF41 (video class)");
++		// P5M also sets SO_PRIORITY 5 (Linux/Android only; above 6 needs CAP_NET_ADMIN).
++		// macOS has no SO_PRIORITY; SO_NET_SERVICE_TYPE above is its equivalent.
++
++		// Receive buffer larger than chiaki's. chiaki asks for SO_RCVBUF equal to the a_rwnd it
++		// announces in the protocol (0x19000, 100 KB): two numbers with different owners. a_rwnd
++		// is a promise to the console and stays; SO_RCVBUF is the kernel's bucket here, and
++		// 100 KB at 25 Mbps is only 32 ms. A 1080p keyframe easily passes 200 KB and arrives in
++		// one burst; if the reading thread is off the CPU for a moment, the kernel drops the
++		// excess silently. That closes a loop P5M saw in its logs: FEC failure -> IDR request ->
++		// big keyframe burst -> buffer overflow -> FEC failure. 1 MB gives ~320 ms of headroom.
++		// The kernel may grant less, so the granted size is read back and logged.
++		const int rcvbuf_wanted = 1024 * 1024;
++		if(setsockopt(takion->sock, SOL_SOCKET, SO_RCVBUF,
++				(const CHIAKI_SOCKET_BUF_TYPE)&rcvbuf_wanted, sizeof(rcvbuf_wanted)) < 0)
++			CHIAKI_LOGW(takion->log, "Takion: 1 MB SO_RCVBUF refused; carrying on with %d B", (int)takion->a_rwnd);
++		else
++		{
++			int granted = 0;
++			socklen_t granted_size = sizeof(granted);
++			if(getsockopt(takion->sock, SOL_SOCKET, SO_RCVBUF,
++					(CHIAKI_SOCKET_BUF_TYPE)&granted, &granted_size) == 0)
++				CHIAKI_LOGI(takion->log, "Takion: receive buffer asked %d B, granted %d B", rcvbuf_wanted, granted);
++		}
++	}
++
+ 	err = chiaki_thread_create(&takion->thread, takion_thread_func, takion);
+ 
+ 	chiaki_thread_set_name(&takion->thread, "Chiaki Takion");
+ 
+ 	return CHIAKI_ERR_SUCCESS;
+ 
