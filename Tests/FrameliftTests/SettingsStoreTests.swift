@@ -56,6 +56,24 @@ struct SettingsStoreTests {
         #expect(loaded.bitrateKbps == StreamSettingsLimits.bitrateRangeKbps.upperBound)
     }
 
+    @Test func sharpnessIsClampedAndNaNResets() {
+        var settings = StreamSettings()
+        settings.sharpness = 7
+        #expect(SettingsStore.sanitized(settings).sharpness == StreamSettingsLimits.sharpnessRange.upperBound)
+        settings.sharpness = -1
+        #expect(SettingsStore.sanitized(settings).sharpness == 0)
+        settings.sharpness = .nan
+        #expect(SettingsStore.sanitized(settings).sharpness == StreamSettingsLimits.defaultSharpness)
+        settings.sharpness = 1.2
+        #expect(SettingsStore.sanitized(settings).sharpness == 1.2)
+    }
+
+    @Test func bitrateUpTo100MbpsIsKept() {
+        var settings = StreamSettings()
+        settings.bitrateKbps = 100_000
+        #expect(SettingsStore.sanitized(settings).bitrateKbps == 100_000)
+    }
+
     @Test func hdrSettingsAreNotKept() {
         var settings = StreamSettings()
         settings.codec = .hevcHDR
@@ -80,6 +98,7 @@ struct SettingsStoreTests {
         #expect(loaded.bitrateKbps == 9000 && loaded.codec == .h264 && !loaded.fullscreen)
         #expect(loaded.showOverlay == false)
         #expect(loaded.keepLLFIWarm && loaded.keepStaticOverlays && loaded.blendFallback)
+        #expect(loaded.sharpness == StreamSettingsLimits.defaultSharpness)
     }
 
     @Test func pairedConsoleWithPartialSettingsDecodes() throws {

@@ -5,6 +5,7 @@
 import CoreImage
 import CoreVideo
 import Foundation
+import ImageIO
 import Metal
 import Testing
 @testable import Framelift
@@ -114,5 +115,51 @@ import Testing
         var bytes = [UInt8](repeating: 0, count: 1920 * 1080 * 4)
         target.getBytes(&bytes, bytesPerRow: 1920 * 4, from: MTLRegionMake2D(0, 0, 1920, 1080), mipmapLevel: 0)
         try Data(bytes).write(to: URL(fileURLWithPath: "\(out)/present-\(k).bgra"))
+    }
+}
+
+/// FRAMELIFT_SHARP_FRAME rendered at 4480x2520 per FRAMELIFT_SHARPNESS: <out>/sharp-<s>.png and edge strength.
+@Suite struct OfflineSharpnessHarness {
+    @Test func renderSharpnessLevels() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let clip = env["FRAMELIFT_CLIP"], let out = env["FRAMELIFT_OUT"],
+              let k = env["FRAMELIFT_SHARP_FRAME"].flatMap(Int.init) else { return }
+        let levels = (env["FRAMELIFT_SHARPNESS"] ?? "0,0.6,1,1.5").split(separator: ",").compactMap { Float($0) }
+        let (w, h) = (4480, 2520)
+        try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
+        let frame = try #require(OfflineFrameGenHarness.decode(clip: clip, from: k, count: 1, w: 1920, h: 1080).first)
+        let ctx = try RenderContext.shared()
+        let encoder = try PresentEncoder(context: ctx)
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: w, height: h, mipmapped: false)
+        d.usage = [.renderTarget, .shaderRead]
+        d.storageMode = .shared
+        let target = try #require(ctx.device.makeTexture(descriptor: d))
+        for s in levels {
+            encoder.sharpness = s
+            let cb = try #require(ctx.queue.makeCommandBuffer())
+            let done = try #require(encoder.encode(frame, into: target, commandBuffer: cb, hud: nil))
+            cb.commit()
+            cb.waitUntilCompleted()
+            withExtendedLifetime(done.keep) {}
+            var bytes = [UInt8](repeating: 0, count: w * h * 4)
+            target.getBytes(&bytes, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+            var lap = 0.0
+            for y in 1..<(h - 1) {
+                for x in 1..<(w - 1) {
+                    func g(_ x: Int, _ y: Int) -> Double { Double(bytes[(y * w + x) * 4 + 1]) }
+                    lap += abs(4 * g(x, y) - g(x - 1, y) - g(x + 1, y) - g(x, y - 1) - g(x, y + 1))
+                }
+            }
+            print(String(format: "sharpness %.2f: mean |laplacian| %.3f", s, lap / Double((w - 2) * (h - 2))))
+            let provider = try #require(CGDataProvider(data: Data(bytes) as CFData))
+            let image = try #require(CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                                             space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
+                                             provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+            let url = URL(fileURLWithPath: String(format: "%@/sharp-%.2f.png", out, s)) as CFURL
+            let dest = try #require(CGImageDestinationCreateWithURL(url, "public.png" as CFString, 1, nil))
+            CGImageDestinationAddImage(dest, image, nil)
+            #expect(CGImageDestinationFinalize(dest))
+        }
     }
 }

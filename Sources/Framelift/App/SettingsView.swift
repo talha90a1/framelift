@@ -36,7 +36,20 @@ struct SettingsView: View {
                             .frame(width: 64, alignment: .trailing)
                     }
                 }
-                Text("1080p, 30 fps from the PS5, shown at 60 fps with Apple's frame interpolation. 30 Mbps (default) suits most Wi-Fi. On Ethernet or a direct cable, use 50 Mbps for the sharpest picture. This is a maximum: the PS5 lowers it by itself when packets drop.")
+                Text("1080p, 30 fps from the PS5, shown at 60 fps with Apple's frame interpolation. 30 Mbps (default) suits most Wi-Fi. On Ethernet or a direct cable, use 50–100 Mbps for the sharpest picture. This is a maximum: the PS5 lowers it by itself when packets drop.")
+                    .settingsHelp()
+            }
+
+            Section("Picture") {
+                LabeledContent("Sharpness") {
+                    HStack {
+                        Slider(value: $model.settings.sharpness, in: StreamSettingsLimits.sharpnessRange, step: 0.05)
+                        Text(model.settings.sharpness, format: .number.precision(.fractionLength(2)))
+                            .monospacedDigit()
+                            .frame(width: 64, alignment: .trailing)
+                    }
+                }
+                Text("Sharpens the 1080p stream on larger screens. 0 turns it off.")
                     .settingsHelp()
             }
 

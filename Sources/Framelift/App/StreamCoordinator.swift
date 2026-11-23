@@ -125,10 +125,11 @@ final class StreamCoordinator: ObservableObject {
         settings.showOverlay = newSettings.showOverlay
         settings.keepStaticOverlays = newSettings.keepStaticOverlays
         settings.blendFallback = newSettings.blendFallback
+        settings.sharpness = newSettings.sharpness
         engine?.update(settings: settings)
         window?.overlayVisible = newSettings.showOverlay
         engine?.showFPSCounter = newSettings.showOverlay
-        Diagnostics.shared.event("live settings sceneCutFallback=\(settings.sceneCutFallback) keepStatic=\(settings.keepStaticOverlays) blendFallback=\(settings.blendFallback)")
+        Diagnostics.shared.event("live settings sceneCutFallback=\(settings.sceneCutFallback) keepStatic=\(settings.keepStaticOverlays) blendFallback=\(settings.blendFallback) sharpness=\(settings.sharpness)")
     }
 
     // MARK: Pipeline
@@ -309,7 +310,7 @@ final class StreamCoordinator: ObservableObject {
             d.event("target ps5 \(console.nickname) host=\(console.host)")
             d.event("console link: \(SystemReport.consoleLink(host: console.host))")
         }
-        d.event("settings \(s.width)x\(s.height)@\(s.streamFPS) bitrate=\(s.bitrateKbps)kbps codec=\(s.codec.label) fullscreen=\(s.fullscreen) sceneCutFallback=\(s.sceneCutFallback)")
+        d.event("settings \(s.width)x\(s.height)@\(s.streamFPS) bitrate=\(s.bitrateKbps)kbps codec=\(s.codec.label) fullscreen=\(s.fullscreen) sceneCutFallback=\(s.sceneCutFallback) sharpness=\(s.sharpness)")
         d.event("frame generation keepWarm=\(s.keepLLFIWarm) keepStatic=\(s.keepStaticOverlays) blendFallback=\(s.blendFallback) buffers=\(DisplayBuffering.stored().drawableCount)")
         if let screen = window?.screen {
             d.event("display \(screen.localizedName) \(DisplayInfo.hzText(Double(screen.maximumFramesPerSecond))) Hz frame=\(screen.frame)")
