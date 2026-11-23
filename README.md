@@ -16,6 +16,12 @@
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-1b1b20?style=flat-square"></a>
 </p>
 
+<p align="center">
+  <a href="../../releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/talha90a1/framelift/total?style=flat-square&label=downloads&color=3fb950"></a>
+  <a href="../../releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/talha90a1/framelift?style=flat-square&label=release&color=3fb950"></a>
+  <a href="../../stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/talha90a1/framelift?style=flat-square&color=3fb950"></a>
+</p>
+
 Framelift is a native PS5 Remote Play app for Apple Silicon. Most PS5 games stream at 30 fps; Framelift adds an in-between frame for every pair with Apple's on-device frame interpolation, so motion looks like 60 fps. It runs on your local network, over Wi-Fi or Ethernet.
 
 ## Features
