@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Settings › Picture › Sharpness (0 to 1.5, default 0.5) for screens larger than 1080p.
+
+### Changed
+
+- Stronger upscale sharpening: the old one was clamped to the nearest 2x2 pixels, which cancelled most of it.
+- The bitrate goes up to 100 Mbps (was 50).
+
 ## 1.0.0 - 2026-11-23
 
 First public version.

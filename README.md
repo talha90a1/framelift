@@ -54,7 +54,7 @@ A wired connection gives the steadiest picture and the lowest lag. From best to 
 2. **Both on Ethernet.** Plug the PS5 and the Mac into your router.
 3. **Wi-Fi.** Works, but expect occasional hiccups. Use 5 GHz or 6 GHz and keep the router close.
 
-The bitrate defaults to 30 Mbps, which suits most Wi-Fi. On a cable, raise it to 50 Mbps in Settings for the sharpest picture.
+The bitrate defaults to 30 Mbps, which suits most Wi-Fi. On a cable, raise it to 50–100 Mbps in Settings for the sharpest picture.
 
 ## Settings
 

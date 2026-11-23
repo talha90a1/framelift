@@ -13,7 +13,7 @@ enum UpscaleMethod: String, Sendable {
 
 final class PresentEncoder: @unchecked Sendable {
     /// Strength of the sharp pass's adaptive sharpening (0 = plain Catmull-Rom).
-    var sharpness: Float = 0.6
+    var sharpness: Float = Float(StreamSettingsLimits.defaultSharpness)
     /// Matrix + range of the YUV->RGB step (the presenter sets it per stream format and colour mode).
     var colour = ColourMapping.standard {
         didSet { if colour != oldValue { constants = Self.makeConstants(colour) } }

@@ -5,7 +5,8 @@
 Open Settings with ⌘,. The defaults are the recommended values.
 
 - **Display:** the screen to play on (for example a TV over HDMI), and Fullscreen (on by default). Fullscreen also lets macOS turn on Game Mode.
-- **Stream:** bitrate, from 2 to 50 Mbps. The default, 30 Mbps, suits most Wi-Fi; on Ethernet or a direct cable, use 50 Mbps for the sharpest picture. It's a maximum: the PS5 lowers it by itself when packets drop. If more than 3% of packets drop for a few seconds, Framelift shows a short "Weak connection" notice on the stream.
+- **Stream:** bitrate, from 2 to 100 Mbps. The default, 30 Mbps, suits most Wi-Fi; on Ethernet or a direct cable, use 50 to 100 Mbps for the sharpest picture. It's a maximum: the PS5 lowers it by itself when packets drop. If more than 3% of packets drop for a few seconds, Framelift shows a short "Weak connection" notice on the stream.
+- **Picture:** Sharpness, 0 to 1.5 (default 0.5). Sharpens the 1080p stream on screens larger than 1080p; 0 turns it off.
 - **Frame generation:** Apple ML interpolation, 30 to 60 fps. The options are:
   - Keep Apple ML warm (on): runs a spare request between frames so the model stays fast. It saves about 4 to 5 ms per generated frame.
   - Keep subtitles and HUD sharp (on): the static-overlay guard.
