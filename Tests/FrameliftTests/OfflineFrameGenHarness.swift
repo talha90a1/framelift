@@ -5,6 +5,7 @@
 import CoreImage
 import CoreVideo
 import Foundation
+import Metal
 import Testing
 @testable import Framelift
 
@@ -89,5 +90,29 @@ import Testing
         let ctx = CIContext()
         try ctx.writePNGRepresentation(of: CIImage(cvPixelBuffer: buffer), to: URL(fileURLWithPath: path),
                                        format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+    }
+}
+
+/// Renders one recorded frame through the app's own Metal present shader into BGRA (dev only).
+/// FRAMELIFT_CLIP + FRAMELIFT_COLOUR_FRAME + FRAMELIFT_OUT -> <out>/present-<k>.bgra (1920x1080x4).
+@Suite struct OfflineColourHarness {
+    @Test func renderThroughPresentShader() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let clip = env["FRAMELIFT_CLIP"], let out = env["FRAMELIFT_OUT"], let k = env["FRAMELIFT_COLOUR_FRAME"].flatMap(Int.init) else { return }
+        let frame = try #require(OfflineFrameGenHarness.decode(clip: clip, from: k, count: 1, w: 1920, h: 1080).first)
+        let ctx = try RenderContext.shared()
+        let encoder = try PresentEncoder(context: ctx)
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 1920, height: 1080, mipmapped: false)
+        d.usage = [.renderTarget, .shaderRead]
+        d.storageMode = .shared
+        let target = try #require(ctx.device.makeTexture(descriptor: d))
+        let cb = try #require(ctx.queue.makeCommandBuffer())
+        let done = try #require(encoder.encode(frame, into: target, commandBuffer: cb, hud: nil))
+        cb.commit()
+        cb.waitUntilCompleted()
+        withExtendedLifetime(done.keep) {}
+        var bytes = [UInt8](repeating: 0, count: 1920 * 1080 * 4)
+        target.getBytes(&bytes, bytesPerRow: 1920 * 4, from: MTLRegionMake2D(0, 0, 1920, 1080), mipmapLevel: 0)
+        try Data(bytes).write(to: URL(fileURLWithPath: "\(out)/present-\(k).bgra"))
     }
 }
