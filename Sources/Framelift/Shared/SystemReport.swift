@@ -2,6 +2,7 @@
 // Plain-text system report (app, macOS, Mac, displays, network, controller, settings) for events.log and exports.
 import AppKit
 import CoreGraphics
+import Darwin
 import Foundation
 import SystemConfiguration
 
@@ -15,7 +16,7 @@ enum SystemReport {
         lines += environmentLines()
         lines.append("Displays:")
         lines += NSScreen.screens.map { "  " + displayLine($0, target: target) }
-        lines.append("Network: \(primaryInterface())")
+        lines.append("Mac internet: \(primaryInterface())")
         lines.append("Controller: \(controller ?? "none (keyboard fallback)")")
         lines.append("Controller feedback: \(controllerFeedback) (setting: \(DualSenseFeedbackMode.stored().title))")
         lines.append("Settings:")
@@ -67,6 +68,37 @@ enum SystemReport {
         let kind = CGDisplayIsBuiltin(id) != 0 ? "built-in" : "external"
         let marker = id == target ? " [stream target]" : ""
         return "\(screen.localizedName) id=\(id) \(kind) \(size) refresh \(RefreshCapability.of(screen).summary)\(marker)"
+    }
+
+    /// How this Mac reaches the console: the local interface whose IPv4 subnet holds `host`.
+    /// A bridge interface is Internet Sharing (or Thunderbolt Bridge), i.e. a cable to the Mac.
+    static func consoleLink(host: String) -> String {
+        var target = in_addr()
+        guard inet_pton(AF_INET, host, &target) == 1 else { return "unknown" }
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return "unknown" }
+        defer { freeifaddrs(list) }
+        for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let ifa = entry.pointee
+            guard ifa.ifa_flags & UInt32(IFF_UP) != 0, let addr = ifa.ifa_addr, let mask = ifa.ifa_netmask,
+                  addr.pointee.sa_family == sa_family_t(AF_INET) else { continue }
+            let ip = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
+            let netmask = mask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
+            guard netmask != 0, ip & netmask == target.s_addr & netmask else { continue }
+            let bsd = String(cString: ifa.ifa_name)
+            if bsd.hasPrefix("bridge") { return "direct cable (Internet Sharing, \(bsd))" }
+            return interfaceKind(bsd)
+        }
+        return "routed via \(primaryInterface())"
+    }
+
+    private static func interfaceKind(_ bsd: String) -> String {
+        let all = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] ?? []
+        guard let interface = all.first(where: { SCNetworkInterfaceGetBSDName($0) as String? == bsd }) else { return bsd }
+        let type = SCNetworkInterfaceGetInterfaceType(interface) as String?
+        if type == kSCNetworkInterfaceTypeIEEE80211 as String { return "Wi-Fi (\(bsd))" }
+        if type == kSCNetworkInterfaceTypeEthernet as String { return "Ethernet (\(bsd))" }
+        return "\(type ?? "unknown") (\(bsd))"
     }
 
     /// Kind of the interface carrying the default IPv4 route ("Wi-Fi (en0)"). Never the SSID or BSSID.

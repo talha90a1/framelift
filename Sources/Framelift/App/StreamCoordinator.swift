@@ -307,6 +307,7 @@ final class StreamCoordinator: ObservableObject {
         let s = settings
         if case .console(let console, _) = target {
             d.event("target ps5 \(console.nickname) host=\(console.host)")
+            d.event("console link: \(SystemReport.consoleLink(host: console.host))")
         }
         d.event("settings \(s.width)x\(s.height)@\(s.streamFPS) bitrate=\(s.bitrateKbps)kbps codec=\(s.codec.label) fullscreen=\(s.fullscreen) sceneCutFallback=\(s.sceneCutFallback)")
         d.event("frame generation keepWarm=\(s.keepLLFIWarm) keepStatic=\(s.keepStaticOverlays) blendFallback=\(s.blendFallback) buffers=\(DisplayBuffering.stored().drawableCount)")
