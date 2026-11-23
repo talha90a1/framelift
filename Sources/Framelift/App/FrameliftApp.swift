@@ -24,7 +24,7 @@ final class FrameliftAppDelegate: NSObject, NSApplicationDelegate {
 struct FrameliftApp: App {
     @NSApplicationDelegateAdaptor(FrameliftAppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel.shared
-    @AppStorage(DebugLogs.defaultsKey) private var debugLogs = false
+    @AppStorage(DebugLogs.defaultsKey) private var debugLogs = true
 
     var body: some Scene {
         Window("Framelift", id: "main") {

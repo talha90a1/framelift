@@ -6,7 +6,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @AppStorage(TouchpadMode.defaultsKey) private var touchpad: TouchpadMode = .clickOnly
-    @AppStorage(DebugLogs.defaultsKey) private var debugLogs = false
+    @AppStorage(DebugLogs.defaultsKey) private var debugLogs = true
     @AppStorage(DisplayBuffering.defaultsKey) private var buffering: DisplayBuffering = .triple
     @State private var hasSessionLogs = false
 
@@ -73,7 +73,7 @@ struct SettingsView: View {
             Section("Debug") {
                 Toggle("Show performance overlay (⇧⌘O)", isOn: $model.settings.showOverlay)
                 Toggle("Debug logs", isOn: $debugLogs)
-                Text("Writes a log folder per stream to ~/Library/Logs/Framelift/. Takes effect from the next stream.")
+                Text("Writes a log folder per stream to ~/Library/Logs/Framelift/, with a recording of the stream (up to 5 minutes) for offline tests. Takes effect from the next stream.")
                     .settingsHelp()
                 if debugLogs {
                     Text("Latency probe: ⇧⌘L while streaming, then press Options.")
