@@ -107,7 +107,7 @@ struct LogExporter {
           This Mac's name                                      -> <mac>
           Your home folder and user name                       -> ~, <user>
           The same value gets the same token everywhere in this zip.
-          Pairing keys and other Keychain data are never read for export.
+          Pairing keys are never read for export.
 
         """
     }

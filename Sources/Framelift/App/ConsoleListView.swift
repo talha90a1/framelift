@@ -91,7 +91,7 @@ struct ConsoleListView: View {
         ) { console in
             Button("Remove", role: .destructive) { store.remove(console.id) }
         } message: { _ in
-            Text("Its Remote Play keys are deleted from the Keychain. You'll need a new PIN to pair again.")
+            Text("Its Remote Play keys are deleted from this Mac. You'll need a new PIN to pair again.")
         }
         .alert(item: $model.errorAlert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message))

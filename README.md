@@ -25,7 +25,7 @@ Framelift is a native PS5 Remote Play app for Apple Silicon. Most PS5 games stre
 - **Low lag.** Connects to the PS5 directly: no capture card, no screen capture of another app.
 - **Any screen.** Built-in display, external monitor or a TV over HDMI, paced to its refresh rate.
 - **DualSense** buttons, touchpad, motion, rumble, haptics and adaptive triggers.
-- **Private.** Pairing and streaming stay on your network; pairing keys live in the Keychain.
+- **Private.** Pairing and streaming stay on your network; pairing keys stay on your Mac.
 
 
 ## Install

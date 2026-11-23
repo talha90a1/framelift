@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // C ABI between the Swift app and Veyra's ported remote-play core (C++20) on top of chiaki-ng.
-// Credentials passed in here are never logged or persisted by the core (the app keeps them in Keychain).
+// Credentials passed in here are never logged or persisted by the core (the app stores them).
 #ifndef VEYRA_BRIDGE_H
 #define VEYRA_BRIDGE_H
 #include <stdbool.h>
