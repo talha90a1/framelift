@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "indentation": { "spaces": 4 },
+  "lineLength": 160,
+  "maximumBlankLines": 1,
+  "respectsExistingLineBreaks": true,
+  "lineBreakBeforeEachArgument": false,
+  "rules": {
+    "AlwaysUseLowerCamelCase": false,
+    "DoNotUseSemicolons": false,
+    "OneVariableDeclarationPerLine": false,
+    "OneCasePerLine": false,
+    "UseLetInEveryBoundCaseVariable": false,
+    "ReplaceForEachWithForLoop": false,
+    "NoBlockComments": false,
+    "OrderedImports": false,
+    "UseSynthesizedInitializer": false,
+    "AllPublicDeclarationsHaveDocumentation": false,
+    "ValidateDocumentationComments": false,
+    "BeginDocumentationCommentWithOneLineSummary": false,
+    "UseTripleSlashForDocumentationComments": false,
+    "NeverForceUnwrap": false,
+    "NeverUseForceTry": false,
+    "NeverUseImplicitlyUnwrappedOptionals": false,
+    "NoAccessLevelOnExtensionDeclaration": false,
+    "FileScopedDeclarationPrivacy": false
+  }
+}

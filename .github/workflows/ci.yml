@@ -1,10 +1,29 @@
 name: CI
 
+# Docs-only changes (README, docs/, licenses, templates) don't need a Mac build.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "licenses/**"
+      - "LICENSE"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/pull_request_template.md"
+      - ".github/RELEASE_NOTES.md"
+      - ".editorconfig"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "licenses/**"
+      - "LICENSE"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/pull_request_template.md"
+      - ".github/RELEASE_NOTES.md"
+      - ".editorconfig"
 
 permissions:
   contents: read
@@ -51,3 +70,20 @@ jobs:
 
       - name: Test
         run: swift test
+
+  lint:
+    # Advisory: shows swift-format warnings for the Swift files a pull request changes, without failing.
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: swift-format lint (changed files)
+        run: |
+          FILES=$(git diff --name-only --diff-filter=AM "origin/${{ github.base_ref }}...HEAD" -- '*.swift')
+          if [ -z "$FILES" ]; then echo "No Swift files changed."; exit 0; fi
+          echo "$FILES" | xargs xcrun swift-format lint --configuration .swift-format 2>&1 \
+            | sed -E 's#^([^:]+):([0-9]+):([0-9]+): warning: (.*)#::warning file=\1,line=\2,col=\3::\4#' || true

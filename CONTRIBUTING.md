@@ -61,6 +61,11 @@ Commit the `.metal` change and the regenerated `ShaderSources.swift` together. D
 
 `.github/workflows/ci.yml` builds libchiaki, the app and the tests on every push and pull request to `main`. It uses the newest Xcode on GitHub's `macos-latest` Apple Silicon runner. The project is developed with the macOS 27 SDK, so CI is only reliable on a runner whose Xcode has that SDK; if GitHub's image is older and the build fails for that reason, use a newer image or a self-hosted runner. Until then, run the build and `swift test` locally and say so in your pull request.
 
+- Pushes and pull requests that only touch docs (Markdown, `docs/`, licenses, issue templates) skip the build.
+- Pull requests also get an advisory `swift-format` check of the Swift files they change (config in `.swift-format`). It adds warnings to the PR but does not fail it.
+- Pushing a `v*` tag builds the release zip, records build provenance (`gh attestation verify`), and publishes the release with generated notes.
+- Add `[skip ci]` to a commit message for trivial changes that need no build.
+
 ## Coding style
 
 - Swift: follow the [Swift API Design Guidelines](https://www.swift.org/documentation/api-design-guidelines/). Four spaces, no tabs.
