@@ -6,14 +6,14 @@ import Testing
 struct SettingsStoreTests {
     /// A private defaults domain per test so nothing touches the real app's preferences.
     private func makeStore() -> (SettingsStore, UserDefaults, String) {
-        let suite = "framelift.tests.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
         return (SettingsStore(defaults: defaults), defaults, suite)
     }
 
     @Test func defaultsWhenNothingSaved() {
         let (store, defaults, suite) = makeStore()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(suite) }
         let settings = store.load()
         #expect(settings == StreamSettings())
         #expect(StreamPreset(settings: settings) == .p1080fps30)
@@ -21,7 +21,7 @@ struct SettingsStoreTests {
 
     @Test func roundTrip() {
         let (store, defaults, suite) = makeStore()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(suite) }
         var settings = StreamSettings()
         StreamPreset.p720fps60.apply(to: &settings)
         settings.bitrateKbps = 9000
@@ -38,14 +38,14 @@ struct SettingsStoreTests {
 
     @Test func corruptDataFallsBackToDefaults() {
         let (store, defaults, suite) = makeStore()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(suite) }
         defaults.set(Data("not json".utf8), forKey: SettingsStore.key)
         #expect(store.load() == StreamSettings())
     }
 
     @Test func outOfRangeValuesAreSanitized() throws {
         let (store, defaults, suite) = makeStore()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(suite) }
         var settings = StreamSettings()
         settings.width = 3840
         settings.height = 2160
@@ -72,7 +72,7 @@ struct SettingsStoreTests {
     /// Settings saved before a field existed keep their values; the missing fields take their defaults.
     @Test func missingKeysTakeDefaults() throws {
         let (store, defaults, suite) = makeStore()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(suite) }
         let partial = #"{"width":1280,"height":720,"streamFPS":60,"bitrateKbps":9000,"codec":0,"fullscreen":false,"sceneCutFallback":true}"#
         defaults.set(Data(partial.utf8), forKey: SettingsStore.key)
         let loaded = store.load()
@@ -90,7 +90,7 @@ struct SettingsStoreTests {
 
     @Test func debugLogsOffUnlessTurnedOn() {
         let (_, defaults, suite) = makeStore()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(suite) }
         #expect(DebugLogs.stored(defaults) == false)
         defaults.set(true, forKey: DebugLogs.defaultsKey)
         #expect(DebugLogs.stored(defaults))
@@ -106,9 +106,9 @@ struct DefaultSettingsTests {
         #expect(s.codec == .hevc)
         #expect(s.showOverlay == false)
         #expect(s.keepLLFIWarm && s.keepStaticOverlays && s.blendFallback)
-        let suite = "framelift.tests.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(suite) }
         #expect(DisplayBuffering.stored(defaults) == .triple)
         #expect(DisplayBuffering.triple.drawableCount == 3)
     }
