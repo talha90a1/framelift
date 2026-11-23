@@ -61,9 +61,9 @@ struct ColourMappingTests {
     }
 
     @Test func storedModeDefaultsToAutomatic() {
-        let suite = "framelift.tests.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(suite) }
         #expect(ColourMode.stored(defaults) == .automatic)
         defaults.set("bt1886", forKey: ColourMode.defaultsKey)
         #expect(ColourMode.stored(defaults) == .bt1886)
