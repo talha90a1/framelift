@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Not sandboxed: the app talks raw UDP/TCP to the PS5 (discovery broadcast, Takion, wake), reads
+	     controllers and writes debug logs to ~/Library/Logs/Framelift. Ad-hoc signed without the hardened runtime,
+	     so no further entitlements are needed. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>

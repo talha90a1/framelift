@@ -1,0 +1,59 @@
+name: Release
+
+# Push a tag like v0.1.0 to build an ad hoc signed Apple Silicon zip and publish it as a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select the newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          echo "DEVELOPER_DIR=$XCODE/Contents/Developer" >> "$GITHUB_ENV"
+          xcodebuild -version
+
+      - name: Install Homebrew dependencies
+        run: brew install cmake protobuf miniupnpc libevent json-c opus openssl@3
+
+      - name: Restore libchiaki build
+        id: chiaki-cache
+        uses: actions/cache@v6
+        with:
+          path: build/chiaki-dist
+          key: chiaki-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build_chiaki.sh', 'scripts/patches/**') }}
+
+      - name: Build libchiaki
+        if: steps.chiaki-cache.outputs.cache-hit != 'true'
+        run: scripts/build_chiaki.sh
+
+      - name: Test
+        run: swift test
+
+      - name: Build release zip
+        run: scripts/release.sh
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/Framelift-*-macOS-arm64.zip dist/Framelift-*-macOS-arm64.zip.sha256 \
+            --title "Framelift ${GITHUB_REF_NAME#v}" --notes-file .github/RELEASE_NOTES.md
+
+      - name: Keep the build (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Framelift-macOS-arm64
+          path: dist/Framelift-*-macOS-arm64.zip*

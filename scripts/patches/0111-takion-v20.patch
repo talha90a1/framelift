@@ -1,0 +1,1717 @@
+Framelift 0111: Takion v20 (Sony's current Remote Play stream protocol).
+
+Source: P5M patches/0052-protocolo-do-mac-takion-v20-botao-preso-fec-e-psn.patch (v20 parts).
+
+- Negotiation: on a PS5, after the Takion connect and before the BIG, the stream connection sends
+  TAKIONPROTOCOLREQUEST offering 12 and 20 and waits up to 1 s for the ack. If the console picks
+  20 it switches (chiaki_takion_set_version) and does the BIG/BANG key exchange on secp521r1 with
+  a 66 byte shared secret; with no ack or another answer it stays on 12 exactly as before.
+  ChiakiConnectInfo.disable_takion_v20 skips the request (the bridge sets it after a failed v20
+  attempt). Registration/pairing and stored credentials are untouched.
+- v20 wire format: an 8 byte extended header (send time us + counter, both u32 BE) after the type
+  byte of every non-chunk packet (AV, feedback, congestion, mic); MAC and key_pos move by 8.
+  Received send times feed a one-way delay variation line every 10 s (INFO).
+- v20 AV parsing: audio FEC count narrowed to 12 bits with a mode nibble (mode 2 translated to the
+  v12 layout, mode 1 = one multichannel unit per packet), haptics marker in the low nibble.
+- Multichannel audio: the channel count from the packet's type byte reopens the Opus decoder as an
+  Opus multistream decoder (layout detected from the first packet); frame_cb then gets N channels.
+- Trigger effects (8 extra leading bytes on v20) and pad info (0x1a/0x12 sizes on v20).
+- packetstats: 16-bit sequence difference (no 2^64 "lost" on wrap); new chiaki_packet_stats_get_total.
+- CHIAKI_VEYRA_TAKION_V20_API marks the patched headers.
+Not ported (Veyra doesn't need them or they are diagnostics only): the stuck-button feedback
+sender changes (already upstream at the pinned commit: bfbb296, 4382c1c, bc397a7), PSN/holepunch changes,
+the RUDP ctrl timeout, the P5M_TAKION_PROBE / P5M_AUDIO_CHANNELS experiments (launch spec
+audioSettings, AUDIOSTATE), and P5M's per-packet/per-frame diaries and SO_TIMESTAMP receive path.
+
+Ported from P5M (https://github.com/beecrepaldi-afk/P5M), AGPL-3.0, by beecrepaldi-afk,
+which is built on chiaki-ng (https://github.com/streetpea/chiaki-ng) and Chiaki by Florian Märkl.
+Adapted for Framelift against chiaki-ng 43728af2e639fecb8a7af1cd68c29820a40de973 (on top of
+Veyra's 0002 metadata patch and 0100). P5M patches against chiaki-ng 6547d8ae (2026-07-04)
+plus its own series; the pinned commit is 135 upstream commits later. Portuguese comments translated.
+License: AGPL-3.0-only (LicenseRef-AGPL-3.0-only-OpenSSL, like the files it changes).
+
+diff --git a/lib/include/chiaki/audioreceiver.h b/lib/include/chiaki/audioreceiver.h
+index 7dbb875..d234492 100644
+--- a/lib/include/chiaki/audioreceiver.h
++++ b/lib/include/chiaki/audioreceiver.h
+@@ -45,6 +45,10 @@ typedef struct chiaki_audio_receiver_t
+ 		size_t buf_size;
+ 	} jitter_buffer[8];
+ 	size_t jitter_buffer_count;
++	ChiakiAudioHeader header; // last header delivered, to change the channel count (P5M 0052)
++	bool header_valid;
++	uint16_t single_unit_prefix; // last 2 bytes in front of a multichannel Opus packet (P5M 0052)
++	unsigned single_unit_prefix_logs;
+ } ChiakiAudioReceiver;
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_audio_receiver_init(ChiakiAudioReceiver *audio_receiver, struct chiaki_session_t *session, ChiakiPacketStats *packet_stats);
+diff --git a/lib/include/chiaki/ecdh.h b/lib/include/chiaki/ecdh.h
+index 018457f..71c66cf 100644
+--- a/lib/include/chiaki/ecdh.h
++++ b/lib/include/chiaki/ecdh.h
+@@ -19,6 +19,9 @@ extern "C" {
+ 
+ 
+ #define CHIAKI_ECDH_SECRET_SIZE 32
++// Takion 13 and later exchange keys on secp521r1, with a 66 byte shared secret.
++#define CHIAKI_ECDH_SECRET_SIZE_P521 66
++#define CHIAKI_ECDH_SECRET_SIZE_MAX CHIAKI_ECDH_SECRET_SIZE_P521
+ 
+ typedef struct chiaki_ecdh_t
+ {
+@@ -34,9 +37,12 @@ typedef struct chiaki_ecdh_t
+ 	struct ec_group_st *group;
+ 	struct ec_key_st *key_local;
+ #endif
++	size_t secret_size;
+ } ChiakiECDH;
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_ecdh_init(ChiakiECDH *ecdh);
++/** Same as chiaki_ecdh_init, but on secp521r1 (Takion 13 and later). Only the OpenSSL backend supports it. */
++CHIAKI_EXPORT ChiakiErrorCode chiaki_ecdh_init_p521(ChiakiECDH *ecdh);
+ CHIAKI_EXPORT void chiaki_ecdh_fini(ChiakiECDH *ecdh);
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_ecdh_get_local_pub_key(ChiakiECDH *ecdh, uint8_t *key_out, size_t *key_out_size, const uint8_t *handshake_key, uint8_t *sig_out, size_t *sig_out_size);
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_ecdh_derive_secret(ChiakiECDH *ecdh, uint8_t *secret_out, const uint8_t *remote_key, size_t remote_key_size, const uint8_t *handshake_key, const uint8_t *remote_sig, size_t remote_sig_size);
+diff --git a/lib/include/chiaki/gkcrypt.h b/lib/include/chiaki/gkcrypt.h
+index 748cb42..52d5907 100644
+--- a/lib/include/chiaki/gkcrypt.h
++++ b/lib/include/chiaki/gkcrypt.h
+@@ -53,6 +53,8 @@ struct chiaki_session_t;
+  * @param key_buf_chunks if > 0, use a thread to generate the ctr mode key stream
+  */
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_gkcrypt_init(ChiakiGKCrypt *gkcrypt, ChiakiLog *log, size_t key_buf_chunks, uint8_t index, const uint8_t *handshake_key, const uint8_t *ecdh_secret);
++/** Same as chiaki_gkcrypt_init, for a shared secret that isn't CHIAKI_ECDH_SECRET_SIZE long (66 bytes on secp521r1). */
++CHIAKI_EXPORT ChiakiErrorCode chiaki_gkcrypt_init_secret(ChiakiGKCrypt *gkcrypt, ChiakiLog *log, size_t key_buf_chunks, uint8_t index, const uint8_t *handshake_key, const uint8_t *ecdh_secret, size_t ecdh_secret_size);
+ 
+ CHIAKI_EXPORT void chiaki_gkcrypt_fini(ChiakiGKCrypt *gkcrypt);
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_gkcrypt_gen_key_stream(ChiakiGKCrypt *gkcrypt, uint64_t key_pos, uint8_t *buf, size_t buf_size);
+@@ -64,6 +66,20 @@ CHIAKI_EXPORT void chiaki_gkcrypt_gen_new_gmac_key(ChiakiGKCrypt *gkcrypt, uint6
+ CHIAKI_EXPORT void chiaki_gkcrypt_gen_tmp_gmac_key(ChiakiGKCrypt *gkcrypt, uint64_t index, uint8_t *key_out);
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_gkcrypt_gmac(ChiakiGKCrypt *gkcrypt, uint64_t key_pos, const uint8_t *buf, size_t buf_size, uint8_t *gmac_out);
+ 
++static inline ChiakiGKCrypt *chiaki_gkcrypt_new_secret(ChiakiLog *log, size_t key_buf_chunks, uint8_t index, const uint8_t *handshake_key, const uint8_t *ecdh_secret, size_t ecdh_secret_size)
++{
++	ChiakiGKCrypt *gkcrypt = CHIAKI_NEW(ChiakiGKCrypt);
++	if(!gkcrypt)
++		return NULL;
++	ChiakiErrorCode err = chiaki_gkcrypt_init_secret(gkcrypt, log, key_buf_chunks, index, handshake_key, ecdh_secret, ecdh_secret_size);
++	if(err != CHIAKI_ERR_SUCCESS)
++	{
++		free(gkcrypt);
++		return NULL;
++	}
++	return gkcrypt;
++}
++
+ static inline ChiakiGKCrypt *chiaki_gkcrypt_new(ChiakiLog *log, size_t key_buf_chunks, uint8_t index, const uint8_t *handshake_key, const uint8_t *ecdh_secret)
+ {
+ 	ChiakiGKCrypt *gkcrypt = CHIAKI_NEW(ChiakiGKCrypt);
+diff --git a/lib/include/chiaki/opusdecoder.h b/lib/include/chiaki/opusdecoder.h
+index 75ab8da..e7355fb 100644
+--- a/lib/include/chiaki/opusdecoder.h
++++ b/lib/include/chiaki/opusdecoder.h
+@@ -19,6 +19,10 @@ typedef struct chiaki_opus_decoder_t
+ {
+ 	ChiakiLog *log;
+ 	struct OpusDecoder *opus_decoder;
++	// Multichannel (5.1/7.1) decoder, created on the first packet, when the stream layout is
++	// known (P5M 0052). frame_cb then gets audio_header.channels interleaved channels.
++	struct OpusMSDecoder *ms_decoder;
++	bool ms_pending;
+ 	ChiakiAudioHeader audio_header;
+ 	int16_t *pcm_buf;
+ 	size_t pcm_buf_size;
+diff --git a/lib/include/chiaki/packetstats.h b/lib/include/chiaki/packetstats.h
+index 104c8a9..8c6cd9c 100644
+--- a/lib/include/chiaki/packetstats.h
++++ b/lib/include/chiaki/packetstats.h
+@@ -22,6 +22,11 @@ typedef struct chiaki_packet_stats_t
+ 	ChiakiSeqNum16 seq_min; // sequence number that was max at the last reset
+ 	ChiakiSeqNum16 seq_max; // currently maximal sequence number
+ 	uint64_t seq_received; // total received packets since the last reset
++
++	// Veyra for Mac: windows already closed by a reset, so the whole session can be read
++	// (the congestion control resets the window every 200 ms).
++	uint64_t total_received;
++	uint64_t total_lost;
+ } ChiakiPacketStats;
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_packet_stats_init(ChiakiPacketStats *stats);
+@@ -30,6 +35,8 @@ CHIAKI_EXPORT void chiaki_packet_stats_reset(ChiakiPacketStats *stats);
+ CHIAKI_EXPORT void chiaki_packet_stats_push_generation(ChiakiPacketStats *stats, uint64_t received, uint64_t lost);
+ CHIAKI_EXPORT void chiaki_packet_stats_push_seq(ChiakiPacketStats *stats, ChiakiSeqNum16 seq_num);
+ CHIAKI_EXPORT void chiaki_packet_stats_get(ChiakiPacketStats *stats, bool reset, uint64_t *received, uint64_t *lost);
++/** Received and lost packets over the whole session: closed windows plus the current one. */
++CHIAKI_EXPORT void chiaki_packet_stats_get_total(ChiakiPacketStats *stats, uint64_t *received, uint64_t *lost);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/lib/include/chiaki/session.h b/lib/include/chiaki/session.h
+index ff21b9a..9ffd184 100644
+--- a/lib/include/chiaki/session.h
++++ b/lib/include/chiaki/session.h
+@@ -89,8 +89,20 @@ typedef struct chiaki_connect_info_t
+ 	uint8_t psn_account_id[CHIAKI_PSN_ACCOUNT_ID_SIZE];
+ 	double packet_loss_max;
+ 	bool enable_idr_on_fec_failure;
++	/**
++	 * Veyra for Mac (Takion v20 from P5M 0052): on a PS5 the stream connection offers Takion
++	 * versions 12 and 20 before the BIG and streams with the one the console picks; without an
++	 * answer it stays on 12. Set this to skip the request and always stream on 12, e.g. after a
++	 * v20 attempt failed. Zero-initialized means v20 is negotiated.
++	 */
++	bool disable_takion_v20;
+ } ChiakiConnectInfo;
+ 
++/** Veyra for Mac patch 0111 (Takion v20 from P5M 0052) is applied: disable_takion_v20,
++ * ChiakiStreamConnection.takion_version_offered, chiaki_packet_stats_get_total and multichannel
++ * Opus (frame_cb may get more than 2 channels). */
++#define CHIAKI_VEYRA_TAKION_V20_API 1
++
+ 
+ typedef enum {
+ 	CHIAKI_QUIT_REASON_NONE,
+@@ -242,6 +254,7 @@ typedef struct chiaki_session_t
+ 		bool enable_dualsense;
+ 		uint8_t psn_account_id[CHIAKI_PSN_ACCOUNT_ID_SIZE];
+ 		bool enable_idr_on_fec_failure;
++		bool disable_takion_v20;
+ 	} connect_info;
+ 
+ 	ChiakiTarget target;
+diff --git a/lib/include/chiaki/streamconnection.h b/lib/include/chiaki/streamconnection.h
+index 56ec7b6..defe8ed 100644
+--- a/lib/include/chiaki/streamconnection.h
++++ b/lib/include/chiaki/streamconnection.h
+@@ -33,6 +33,18 @@ typedef struct chiaki_stream_connection_t
+ 	ChiakiLog *log;
+ 	ChiakiTakion takion;
+ 	uint8_t *ecdh_secret;
++	size_t ecdh_secret_size;
++	/** Key exchange on secp521r1 for Takion 13 and later, replacing session->ecdh for this connection. */
++	ChiakiECDH ecdh_p521;
++	bool ecdh_p521_active;
++	/**
++	 * Highest Takion version offered to the console before the BIG (20), 0 if not asked.
++	 * takion.version is the version streamed. Written by the stream connection thread before
++	 * CHIAKI_EVENT_CONNECTED; read them from the event callback (same thread) or after join.
++	 */
++	uint8_t takion_version_offered;
++	bool protocol_ack_received; // state_mutex
++	uint32_t protocol_ack_version; // state_mutex
+ 	ChiakiGKCrypt *gkcrypt_local;
+ 	ChiakiGKCrypt *gkcrypt_remote;
+ 	uint8_t *streaminfo_early_buf;
+diff --git a/lib/include/chiaki/takion.h b/lib/include/chiaki/takion.h
+index b8e4415..f2c433e 100644
+--- a/lib/include/chiaki/takion.h
++++ b/lib/include/chiaki/takion.h
+@@ -45,6 +45,11 @@ typedef struct chiaki_takion_av_packet_t
+ 	uint16_t word_at_0x18;
+ 	uint8_t adaptive_stream_index;
+ 	uint8_t byte_at_0x2c;
++	// Audio type byte (v12+); on v20 its high nibble is the channel count. (P5M 0052)
++	uint8_t audio_kind;
++	// v20 audio mode 1, one unit per packet (multichannel). units_in_frame_fec then only holds
++	// the FEC count; the source unit comes in unit_index 0. (P5M 0052)
++	bool audio_single_unit;
+ 
+ 	uint64_t key_pos;
+ 
+@@ -187,8 +192,35 @@ typedef struct chiaki_takion_t
+ 	ChiakiKeyState key_state;
+ 
+ 	bool enable_dualsense;
++
++	/**
++	 * Takion v20 extended header: 8 bytes right after the packet type byte in every packet,
++	 * holding the sender's send time (us, u32 BE) and a packet counter (u32 BE).
++	 * 0 until chiaki_takion_set_version() switches to v20, CHIAKI_TAKION_EXT_HEADER_SIZE after.
++	 * Written only from the stream connection before BIG; read by the takion thread.
++	 */
++	uint8_t ext_size;
++	uint32_t ext_counter; // protected by gkcrypt_local_mutex
++	uint64_t ext_clock_start_us;
++	// Receive side of the extended header (takion thread only).
++	bool ext_rx_have_prev;
++	uint64_t ext_rx_prev_local_us;
++	uint32_t ext_rx_prev_remote_us;
++	uint64_t ext_rx_window_start_us;
++	uint64_t ext_rx_count;
++	uint64_t ext_rx_abs_sum_us;
++	uint32_t ext_rx_abs_max_us;
+ } ChiakiTakion;
+ 
++#define CHIAKI_TAKION_EXT_HEADER_SIZE 8
++
++/**
++ * Switch the protocol version after TAKIONPROTOCOLREQUESTACK.
++ * Supported: 12 (unchanged) and 20 (adds the extended header).
++ * Call from the stream connection before sending BIG, while the console is still waiting for it.
++ */
++CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_set_version(ChiakiTakion *takion, uint8_t version);
++
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, ChiakiTakionConnectInfo *info, chiaki_socket_t *sock);
+ CHIAKI_EXPORT void chiaki_takion_close(ChiakiTakion *takion);
+@@ -268,6 +300,12 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_v9_av_packet_parse(ChiakiTakionAVPac
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_v12_av_packet_parse(ChiakiTakionAVPacket *packet, ChiakiKeyState *key_state, uint8_t *buf, size_t buf_size);
+ 
++/**
++ * v20: the v12 layout shifted by CHIAKI_TAKION_EXT_HEADER_SIZE, audio FEC count narrowed to 12 bits
++ * and the audio haptics marker moved to the low nibble of its byte.
++ */
++CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_v20_av_packet_parse(ChiakiTakionAVPacket *packet, ChiakiKeyState *key_state, uint8_t *buf, size_t buf_size);
++
+ #define CHIAKI_TAKION_V7_AV_HEADER_SIZE_BASE					0x12
+ #define CHIAKI_TAKION_V7_AV_HEADER_SIZE_VIDEO_ADD				0x3
+ #define CHIAKI_TAKION_V7_AV_HEADER_SIZE_NALU_INFO_STRUCTS_ADD	0x3
+diff --git a/lib/src/audioreceiver.c b/lib/src/audioreceiver.c
+index af91910..b9dc3b6 100644
+--- a/lib/src/audioreceiver.c
++++ b/lib/src/audioreceiver.c
+@@ -29,6 +29,10 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_audio_receiver_init(ChiakiAudioReceiver *au
+ 	audio_receiver->frame_index_startup = true;
+ 	audio_receiver->jitter_buffer_count = 0;
+ 	memset(audio_receiver->jitter_buffer, 0, sizeof(audio_receiver->jitter_buffer));
++	memset(&audio_receiver->header, 0, sizeof(audio_receiver->header));
++	audio_receiver->header_valid = false;
++	audio_receiver->single_unit_prefix = 0;
++	audio_receiver->single_unit_prefix_logs = 0;
+ 
+ 	ChiakiErrorCode err = chiaki_mutex_init(&audio_receiver->mutex, false);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+@@ -62,6 +66,9 @@ CHIAKI_EXPORT void chiaki_audio_receiver_stream_info(ChiakiAudioReceiver *audio_
+ 	CHIAKI_LOGI(audio_receiver->log, "  frame size = %d", audio_header->frame_size);
+ 	CHIAKI_LOGI(audio_receiver->log, "  unknown = %d", audio_header->unknown);
+ 
++	audio_receiver->header = *audio_header;
++	audio_receiver->header_valid = true;
++
+ 	header_cb = audio_receiver->session->audio_sink.header_cb;
+ 	header_cb_user = audio_receiver->session->audio_sink.user;
+ 
+@@ -83,6 +90,67 @@ CHIAKI_EXPORT void chiaki_audio_receiver_stream_info(ChiakiAudioReceiver *audio_
+ 	}
+ }
+ 
++// P5M 0052: STREAMINFO always says 2 channels; on Takion v20 the real count is in the high
++// nibble of the packet's type byte. When it changes, reopen the decoder and the output with it.
++static void chiaki_audio_receiver_check_channels(ChiakiAudioReceiver *audio_receiver, uint8_t channels)
++{
++	if(!channels)
++		return;
++	ChiakiAudioHeader header;
++	bool change = false;
++	if(chiaki_mutex_lock(&audio_receiver->mutex) != CHIAKI_ERR_SUCCESS)
++		return;
++	if(audio_receiver->header_valid && audio_receiver->header.channels != channels)
++	{
++		header = audio_receiver->header;
++		header.channels = channels;
++		change = true;
++	}
++	chiaki_mutex_unlock(&audio_receiver->mutex);
++	if(!change)
++		return;
++	CHIAKI_LOGI(audio_receiver->log, "[audio-channels] console is sending %u channels; reopening audio", (unsigned)channels);
++	chiaki_audio_receiver_stream_info(audio_receiver, &header);
++}
++
++// P5M 0052: v20 multichannel audio (mode 1). Each packet carries one unit of the frame, the
++// source (unit_index 0) or a FEC unit (Reed-Solomon, ignored for now). The source unit has
++// 2 bytes in front of the Opus multistream packet.
++static void chiaki_audio_receiver_single_unit(ChiakiAudioReceiver *audio_receiver, ChiakiTakionAVPacket *packet)
++{
++	uint16_t source_units = (uint16_t)(packet->units_in_frame_total - packet->units_in_frame_fec);
++	if(packet->unit_index >= source_units)
++		return;
++	if(source_units != 1 || packet->data_size <= 2)
++	{
++		if(audio_receiver->single_unit_prefix_logs < 5)
++		{
++			audio_receiver->single_unit_prefix_logs++;
++			CHIAKI_LOGW(audio_receiver->log, "[audio-channels] unexpected single-unit audio: %u source units, %zu bytes",
++				(unsigned)source_units, packet->data_size);
++		}
++		return;
++	}
++
++	if(!packet->is_haptics)
++		chiaki_audio_receiver_check_channels(audio_receiver, packet->audio_kind >> 4);
++
++	uint16_t prefix = (uint16_t)((packet->data[0] << 8) | packet->data[1]);
++	if(prefix != audio_receiver->single_unit_prefix && audio_receiver->single_unit_prefix_logs < 5)
++	{
++		audio_receiver->single_unit_prefix_logs++;
++		CHIAKI_LOGI(audio_receiver->log, "[audio-channels] multichannel unit prefix %#06x, %zu bytes", (unsigned)prefix, packet->data_size);
++	}
++	audio_receiver->single_unit_prefix = prefix;
++
++	if(packet->frame_index > (1 << 15))
++		audio_receiver->frame_index_startup = false;
++	chiaki_audio_receiver_frame(audio_receiver, packet->frame_index, packet->is_haptics, packet->data + 2, packet->data_size - 2);
++
++	if(audio_receiver->packet_stats)
++		chiaki_packet_stats_push_seq(audio_receiver->packet_stats, packet->frame_index);
++}
++
+ CHIAKI_EXPORT void chiaki_audio_receiver_av_packet(ChiakiAudioReceiver *audio_receiver, ChiakiTakionAVPacket *packet)
+ {
+ 	if(packet->codec != 5)
+@@ -91,6 +159,12 @@ CHIAKI_EXPORT void chiaki_audio_receiver_av_packet(ChiakiAudioReceiver *audio_re
+ 		return;
+ 	}
+ 
++	if(packet->audio_single_unit)
++	{
++		chiaki_audio_receiver_single_unit(audio_receiver, packet);
++		return;
++	}
++
+ 	uint8_t source_units_count = chiaki_takion_av_packet_audio_source_units_count(packet);
+ 	uint8_t fec_units_count = chiaki_takion_av_packet_audio_fec_units_count(packet);
+ 	uint8_t unit_size = chiaki_takion_av_packet_audio_unit_size(packet);
+diff --git a/lib/src/ecdh.c b/lib/src/ecdh.c
+index 3277b60..5dc6b7b 100644
+--- a/lib/src/ecdh.c
++++ b/lib/src/ecdh.c
+@@ -65,9 +65,27 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_ecdh_init(ChiakiECDH *ecdh)
+ #undef CHECK
+ #endif
+ 
++	ecdh->secret_size = CHIAKI_ECDH_SECRET_SIZE;
+ 	return CHIAKI_ERR_SUCCESS;
+ }
+ 
++CHIAKI_EXPORT ChiakiErrorCode chiaki_ecdh_init_p521(ChiakiECDH *ecdh)
++{
++	memset(ecdh, 0, sizeof(ChiakiECDH));
++#ifdef CHIAKI_LIB_ENABLE_MBEDTLS
++	return CHIAKI_ERR_INVALID_DATA;
++#else
++#define CHECK(a) if(!(a)) { chiaki_ecdh_fini(ecdh); return CHIAKI_ERR_UNKNOWN; }
++	CHECK(ecdh->group = EC_GROUP_new_by_curve_name(NID_secp521r1));
++	CHECK(ecdh->key_local = EC_KEY_new());
++	CHECK(EC_KEY_set_group(ecdh->key_local, ecdh->group));
++	CHECK(EC_KEY_generate_key(ecdh->key_local));
++#undef CHECK
++	ecdh->secret_size = CHIAKI_ECDH_SECRET_SIZE_P521;
++	return CHIAKI_ERR_SUCCESS;
++#endif
++}
++
+ CHIAKI_EXPORT void chiaki_ecdh_fini(ChiakiECDH *ecdh)
+ {
+ #ifdef CHIAKI_LIB_ENABLE_MBEDTLS
+@@ -228,11 +246,11 @@ error:
+ 		return CHIAKI_ERR_UNKNOWN;
+ 	}
+ 
+-	int r = ECDH_compute_key(secret_out, CHIAKI_ECDH_SECRET_SIZE, remote_public_key, ecdh->key_local, NULL);
++	int r = ECDH_compute_key(secret_out, ecdh->secret_size, remote_public_key, ecdh->key_local, NULL);
+ 
+ 	EC_POINT_free(remote_public_key);
+ 
+-	if(r != CHIAKI_ECDH_SECRET_SIZE)
++	if(r != (int)ecdh->secret_size)
+ 		return CHIAKI_ERR_UNKNOWN;
+ 
+ 	return CHIAKI_ERR_SUCCESS;
+diff --git a/lib/src/gkcrypt.c b/lib/src/gkcrypt.c
+index 409a7aa..cc97c5d 100644
+--- a/lib/src/gkcrypt.c
++++ b/lib/src/gkcrypt.c
+@@ -21,11 +21,16 @@
+ 
+ #define KEY_BUF_CHUNK_SIZE 0x1000
+ 
+-static ChiakiErrorCode gkcrypt_gen_key_iv(ChiakiGKCrypt *gkcrypt, uint8_t index, const uint8_t *handshake_key, const uint8_t *ecdh_secret);
++static ChiakiErrorCode gkcrypt_gen_key_iv(ChiakiGKCrypt *gkcrypt, uint8_t index, const uint8_t *handshake_key, const uint8_t *ecdh_secret, size_t ecdh_secret_size);
+ 
+ static void *gkcrypt_thread_func(void *user);
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_gkcrypt_init(ChiakiGKCrypt *gkcrypt, ChiakiLog *log, size_t key_buf_chunks, uint8_t index, const uint8_t *handshake_key, const uint8_t *ecdh_secret)
++{
++	return chiaki_gkcrypt_init_secret(gkcrypt, log, key_buf_chunks, index, handshake_key, ecdh_secret, CHIAKI_ECDH_SECRET_SIZE);
++}
++
++CHIAKI_EXPORT ChiakiErrorCode chiaki_gkcrypt_init_secret(ChiakiGKCrypt *gkcrypt, ChiakiLog *log, size_t key_buf_chunks, uint8_t index, const uint8_t *handshake_key, const uint8_t *ecdh_secret, size_t ecdh_secret_size)
+ {
+ 	gkcrypt->log = log;
+ 	gkcrypt->index = index;
+@@ -59,7 +64,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_gkcrypt_init(ChiakiGKCrypt *gkcrypt, Chiaki
+ 	{
+ 		gkcrypt->key_buf = NULL;
+ 	}
+-	err = gkcrypt_gen_key_iv(gkcrypt, index, handshake_key, ecdh_secret);
++	err = gkcrypt_gen_key_iv(gkcrypt, index, handshake_key, ecdh_secret, ecdh_secret_size);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 	{
+ 		CHIAKI_LOGE(gkcrypt->log, "GKCrypt failed to generate key and IV");
+@@ -108,7 +113,7 @@ CHIAKI_EXPORT void chiaki_gkcrypt_fini(ChiakiGKCrypt *gkcrypt)
+ 	}
+ }
+ 
+-static ChiakiErrorCode gkcrypt_gen_key_iv(ChiakiGKCrypt *gkcrypt, uint8_t index, const uint8_t *handshake_key, const uint8_t *ecdh_secret)
++static ChiakiErrorCode gkcrypt_gen_key_iv(ChiakiGKCrypt *gkcrypt, uint8_t index, const uint8_t *handshake_key, const uint8_t *ecdh_secret, size_t ecdh_secret_size)
+ {
+ 	uint8_t data[3 + CHIAKI_HANDSHAKE_KEY_SIZE + 2];
+ 	data[0] = 1;
+@@ -130,7 +135,7 @@ static ChiakiErrorCode gkcrypt_gen_key_iv(ChiakiGKCrypt *gkcrypt, uint8_t index,
+ 		return CHIAKI_ERR_UNKNOWN;
+ 	}
+ 
+-	if(mbedtls_md_hmac_starts(&ctx, ecdh_secret, CHIAKI_ECDH_SECRET_SIZE) != 0)
++	if(mbedtls_md_hmac_starts(&ctx, ecdh_secret, ecdh_secret_size) != 0)
+ 	{
+ 		mbedtls_md_free(&ctx);
+ 		return CHIAKI_ERR_UNKNOWN;
+@@ -151,7 +156,7 @@ static ChiakiErrorCode gkcrypt_gen_key_iv(ChiakiGKCrypt *gkcrypt, uint8_t index,
+ 	mbedtls_md_free(&ctx);
+ 
+ #else
+-	if(!HMAC(EVP_sha256(), ecdh_secret, CHIAKI_ECDH_SECRET_SIZE, data, sizeof(data), hmac, (unsigned int *)&hmac_size))
++	if(!HMAC(EVP_sha256(), ecdh_secret, (int)ecdh_secret_size, data, sizeof(data), hmac, (unsigned int *)&hmac_size))
+ 		return CHIAKI_ERR_UNKNOWN;
+ 
+ #endif
+diff --git a/lib/src/opusdecoder.c b/lib/src/opusdecoder.c
+index 5466864..cfc730e 100644
+--- a/lib/src/opusdecoder.c
++++ b/lib/src/opusdecoder.c
+@@ -6,6 +6,7 @@
+ #include <chiaki/opusdecoder.h>
+ 
+ #include <opus/opus.h>
++#include <opus/opus_multistream.h>
+ 
+ #include <string.h>
+ 
+@@ -16,6 +17,8 @@ CHIAKI_EXPORT void chiaki_opus_decoder_init(ChiakiOpusDecoder *decoder, ChiakiLo
+ {
+ 	decoder->log = log;
+ 	decoder->opus_decoder = NULL;
++	decoder->ms_decoder = NULL;
++	decoder->ms_pending = false;
+ 	memset(&decoder->audio_header, 0, sizeof(decoder->audio_header));
+ 
+ 	decoder->pcm_buf = NULL;
+@@ -31,6 +34,93 @@ CHIAKI_EXPORT void chiaki_opus_decoder_fini(ChiakiOpusDecoder *decoder)
+ 	free(decoder->pcm_buf);
+ 	if(decoder->opus_decoder)
+ 		opus_decoder_destroy(decoder->opus_decoder);
++	if(decoder->ms_decoder)
++		opus_multistream_decoder_destroy(decoder->ms_decoder);
++}
++
++// P5M 0052: reads the length of one Opus frame (RFC 6716, 3.2.1).
++static bool p5m_opus_frame_len(const uint8_t **p, const uint8_t *end, size_t *len)
++{
++	if(*p >= end)
++		return false;
++	if(**p < 252)
++	{
++		*len = **p;
++		*p += 1;
++		return true;
++	}
++	if(*p + 1 >= end)
++		return false;
++	*len = (size_t)(*p)[0] + 4 * (size_t)(*p)[1];
++	*p += 2;
++	return true;
++}
++
++// P5M 0052: checks whether the multistream packet has `streams` streams with the first `coupled`
++// in stereo. Every stream but the last uses self-delimiting framing (RFC 6716, appendix B).
++// Only frame codes 0 and 1, which is what the PS5 sends at a constant bitrate.
++static bool p5m_opus_ms_layout_fits(const uint8_t *buf, size_t size, int streams, int coupled)
++{
++	const uint8_t *p = buf, *end = buf + size;
++	for(int i = 0; i < streams; i++)
++	{
++		if(p >= end)
++			return false;
++		uint8_t toc = *p++;
++		bool stereo = (toc & 0x4) != 0;
++		if(stereo != (i < coupled))
++			return false;
++		if(i == streams - 1)
++			return true;
++		size_t len;
++		if(!p5m_opus_frame_len(&p, end, &len))
++			return false;
++		switch(toc & 3)
++		{
++			case 0: break;
++			case 1: len *= 2; break;
++			default: return false;
++		}
++		if(len > (size_t)(end - p))
++			return false;
++		p += len;
++	}
++	return false;
++}
++
++static void p5m_opus_ms_create(ChiakiOpusDecoder *decoder, const uint8_t *buf, size_t size)
++{
++	decoder->ms_pending = false;
++	int channels = (int)decoder->audio_header.channels;
++	int coupled = -1;
++	for(int c = channels / 2; c >= 0; c--)
++	{
++		if(p5m_opus_ms_layout_fits(buf, size, channels - c, c))
++		{
++			coupled = c;
++			break;
++		}
++	}
++	if(coupled < 0)
++	{
++		CHIAKI_LOGE(decoder->log, "[audio-channels] could not work out the Opus multistream layout for %d channels", channels);
++		return;
++	}
++	// The official app uses the identity mapping: stereo pairs first, then mono.
++	unsigned char mapping[255];
++	for(int i = 0; i < channels; i++)
++		mapping[i] = (unsigned char)i;
++	int error;
++	decoder->ms_decoder = opus_multistream_decoder_create((opus_int32)decoder->audio_header.rate, channels,
++		channels - coupled, coupled, mapping, &error);
++	if(error != OPUS_OK)
++	{
++		CHIAKI_LOGE(decoder->log, "[audio-channels] opus_multistream_decoder_create failed: %s", opus_strerror(error));
++		decoder->ms_decoder = NULL;
++		return;
++	}
++	CHIAKI_LOGI(decoder->log, "[audio-channels] Opus multistream decoder: %d channels, %d streams, %d coupled",
++		channels, channels - coupled, coupled);
+ }
+ 
+ CHIAKI_EXPORT void chiaki_opus_decoder_get_sink(ChiakiOpusDecoder *decoder, ChiakiAudioSink *sink)
+@@ -47,18 +137,31 @@ static void chiaki_opus_decoder_header(ChiakiAudioHeader *header, void *user)
+ 
+ 	opus_decoder_destroy(decoder->opus_decoder);
+ 	decoder->opus_decoder = NULL;
++	if(decoder->ms_decoder)
++		opus_multistream_decoder_destroy(decoder->ms_decoder);
++	decoder->ms_decoder = NULL;
++	decoder->ms_pending = false;
+ 
+-	int error;
+-	decoder->opus_decoder = opus_decoder_create(header->rate, header->channels, &error);
+-
+-	if(error != OPUS_OK)
++	if(header->channels > 2)
+ 	{
+-		CHIAKI_LOGE(decoder->log, "ChiakiOpusDecoder failed to initialize opus decoder: %s", opus_strerror(error));
+-		decoder->opus_decoder = NULL;
+-		return;
++		// The stream layout is only known from the first packet.
++		decoder->ms_pending = true;
++		CHIAKI_LOGI(decoder->log, "ChiakiOpusDecoder waiting for the first %u-channel packet", (unsigned)header->channels);
+ 	}
++	else
++	{
++		int error;
++		decoder->opus_decoder = opus_decoder_create(header->rate, header->channels, &error);
++
++		if(error != OPUS_OK)
++		{
++			CHIAKI_LOGE(decoder->log, "ChiakiOpusDecoder failed to initialize opus decoder: %s", opus_strerror(error));
++			decoder->opus_decoder = NULL;
++			return;
++		}
+ 
+-	CHIAKI_LOGI(decoder->log, "ChiakiOpusDecoder initialized");
++		CHIAKI_LOGI(decoder->log, "ChiakiOpusDecoder initialized: %u channels at %u Hz", (unsigned)header->channels, (unsigned)header->rate);
++	}
+ 
+ 	size_t pcm_buf_size_required = chiaki_audio_header_frame_buf_size(header);
+ 	int16_t *pcm_buf_old = decoder->pcm_buf;
+@@ -72,6 +175,7 @@ static void chiaki_opus_decoder_header(ChiakiAudioHeader *header, void *user)
+ 		CHIAKI_LOGE(decoder->log, "ChiakiOpusDecoder failed to alloc pcm buffer");
+ 		opus_decoder_destroy(decoder->opus_decoder);
+ 		decoder->opus_decoder = NULL;
++		decoder->ms_pending = false;
+ 		decoder->pcm_buf_size = 0;
+ 		return;
+ 	}
+@@ -85,14 +189,18 @@ static void chiaki_opus_decoder_header(ChiakiAudioHeader *header, void *user)
+ static void chiaki_opus_decoder_frame(uint8_t *buf, size_t buf_size, void *user)
+ {
+ 	ChiakiOpusDecoder *decoder = user;
+-	if(!decoder->opus_decoder)
++	if(decoder->ms_pending && buf_size)
++		p5m_opus_ms_create(decoder, buf, buf_size);
++	if(!decoder->opus_decoder && !decoder->ms_decoder)
+ 	{
+-		CHIAKI_LOGE(decoder->log, "Received audio frame, but opus decoder is not initialized");
++		// The header failure already logged why; don't repeat it for every packet.
+ 		return;
+ 	}
+ 
+ 	const unsigned char *opus_buf = buf_size ? buf : NULL;
+-	int r = opus_decode(decoder->opus_decoder, opus_buf, (opus_int32)buf_size, decoder->pcm_buf, decoder->audio_header.frame_size, 0);
++	int r = decoder->ms_decoder
++		? opus_multistream_decode(decoder->ms_decoder, opus_buf, (opus_int32)buf_size, decoder->pcm_buf, (int)decoder->audio_header.frame_size, 0)
++		: opus_decode(decoder->opus_decoder, opus_buf, (opus_int32)buf_size, decoder->pcm_buf, decoder->audio_header.frame_size, 0);
+ 	if(r < 1)
+ 		CHIAKI_LOGE(decoder->log, "Decoding audio frame with opus failed: %s", opus_strerror(r));
+ 	else if(decoder->frame_cb)
+diff --git a/lib/src/packetstats.c b/lib/src/packetstats.c
+index 58ef4c6..acd65da 100644
+--- a/lib/src/packetstats.c
++++ b/lib/src/packetstats.c
+@@ -16,6 +16,8 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_packet_stats_init(ChiakiPacketStats *stats)
+ 	stats->seq_min = 0;
+ 	stats->seq_max = 0;
+ 	stats->seq_received = 0;
++	stats->total_received = 0;
++	stats->total_lost = 0;
+ 	err = chiaki_mutex_unlock(&stats->mutex);
+ 	return err;
+ }
+@@ -55,29 +57,41 @@ CHIAKI_EXPORT void chiaki_packet_stats_push_seq(ChiakiPacketStats *stats, Chiaki
+ 		stats->seq_max = seq_num;
+ }
+ 
+-CHIAKI_EXPORT void chiaki_packet_stats_get(ChiakiPacketStats *stats, bool reset, uint64_t *received, uint64_t *lost)
++// Call with stats->mutex held.
++static void window_locked(ChiakiPacketStats *stats, uint64_t *received, uint64_t *lost)
+ {
+-	chiaki_mutex_lock(&stats->mutex);
+-
+ 	// gen
+ 	*received = stats->gen_received;
+ 	*lost = stats->gen_lost;
+ 
+-	//CHIAKI_LOGD(NULL, "gen received: %llu, lost: %llu",
+-	//		(unsigned long long)stats->gen_received,
+-	//		(unsigned long long)stats->gen_lost);
+-
+ 	// seq
+-	uint64_t seq_diff = stats->seq_max - stats->seq_min; // overflow on purpose if max < min
+-	uint64_t seq_lost = stats->seq_received > seq_diff ? seq_diff : seq_diff - stats->seq_received;
++	// P5M 0052: the sequence numbers are 16 bits; take the difference in 16 bits so a
++	// wrap (audio frame index, every ~11 min) does not count as 2^64 lost packets.
++	uint64_t seq_diff = (ChiakiSeqNum16)(stats->seq_max - stats->seq_min);
++	uint64_t seq_lost = stats->seq_received >= seq_diff ? 0 : seq_diff - stats->seq_received;
+ 	*received += stats->seq_received;
+ 	*lost += seq_lost;
++}
+ 
+-	//CHIAKI_LOGD(NULL, "seq received: %llu, lost: %llu",
+-	//		(unsigned long long)stats->seq_received,
+-	//		(unsigned long long)seq_lost);
+-
++CHIAKI_EXPORT void chiaki_packet_stats_get(ChiakiPacketStats *stats, bool reset, uint64_t *received, uint64_t *lost)
++{
++	chiaki_mutex_lock(&stats->mutex);
++	window_locked(stats, received, lost);
+ 	if(reset)
++	{
++		// Veyra for Mac: keep the closed window for chiaki_packet_stats_get_total.
++		stats->total_received += *received;
++		stats->total_lost += *lost;
+ 		reset_stats(stats);
++	}
++	chiaki_mutex_unlock(&stats->mutex);
++}
++
++CHIAKI_EXPORT void chiaki_packet_stats_get_total(ChiakiPacketStats *stats, uint64_t *received, uint64_t *lost)
++{
++	chiaki_mutex_lock(&stats->mutex);
++	window_locked(stats, received, lost);
++	*received += stats->total_received;
++	*lost += stats->total_lost;
+ 	chiaki_mutex_unlock(&stats->mutex);
+ }
+diff --git a/lib/src/session.c b/lib/src/session.c
+index 41c6bbf..d9f4a30 100644
+--- a/lib/src/session.c
++++ b/lib/src/session.c
+@@ -264,6 +264,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_session_init(ChiakiSession *session, Chiaki
+ 	session->connect_info.enable_keyboard = connect_info->enable_keyboard;
+ 	session->connect_info.enable_dualsense = connect_info->enable_dualsense;
+ 	session->connect_info.enable_idr_on_fec_failure = connect_info->enable_idr_on_fec_failure;
++	session->connect_info.disable_takion_v20 = connect_info->disable_takion_v20;
+ 
+ 	return CHIAKI_ERR_SUCCESS;
+ 
+diff --git a/lib/src/streamconnection.c b/lib/src/streamconnection.c
+index afa1a60..1381195 100644
+--- a/lib/src/streamconnection.c
++++ b/lib/src/streamconnection.c
+@@ -31,6 +31,8 @@
+ #define STREAM_CONNECTION_PORT 9296
+ 
+ #define EXPECT_TIMEOUT_MS 5000
++// The console answers the Takion version request in ~2 ms; without an answer, go on with 12 quickly.
++#define TAKION_VERSION_TIMEOUT_MS 1000
+ 
+ #define HEARTBEAT_INTERVAL_MS 1000
+ 
+@@ -39,7 +41,8 @@ typedef enum {
+ 	STATE_IDLE,
+ 	STATE_TAKION_CONNECT,
+ 	STATE_EXPECT_BANG,
+-	STATE_EXPECT_STREAMINFO
++	STATE_EXPECT_STREAMINFO,
++	STATE_EXPECT_PROTOCOL_ACK
+ } StreamConnectionState;
+ 
+ void chiaki_session_send_event(ChiakiSession *session, ChiakiEvent *event);
+@@ -69,6 +72,11 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_init(ChiakiStreamConnecti
+ 
+ 	stream_connection->ecdh_secret = NULL;
+ 	stream_connection->gkcrypt_remote = NULL;
++	stream_connection->ecdh_secret_size = 0;
++	stream_connection->ecdh_p521_active = false;
++	stream_connection->takion_version_offered = 0;
++	stream_connection->protocol_ack_received = false;
++	stream_connection->protocol_ack_version = 0;
+ 	stream_connection->gkcrypt_local = NULL;
+ 	stream_connection->streaminfo_early_buf = NULL;
+ 	stream_connection->streaminfo_early_buf_size = 0;
+@@ -125,6 +133,8 @@ CHIAKI_EXPORT void chiaki_stream_connection_fini(ChiakiStreamConnection *stream_
+ 	chiaki_gkcrypt_free(stream_connection->gkcrypt_local);
+ 
+ 	free(stream_connection->ecdh_secret);
++	if(stream_connection->ecdh_p521_active)
++		chiaki_ecdh_fini(&stream_connection->ecdh_p521);
+ 	if (stream_connection->congestion_control.thread.thread)
+ 		chiaki_congestion_control_stop(&stream_connection->congestion_control);
+ 
+@@ -142,6 +152,122 @@ static bool state_finished_cond_check(void *user)
+ 	return stream_connection->state_finished || stream_connection->should_stop || stream_connection->remote_disconnected;
+ }
+ 
++/*
++ * Takion v20, ported from P5M patch 0052 (beecrepaldi-afk/P5M, AGPL-3.0).
++ *
++ * The official app asks the console, before the BIG, for the list of Takion versions it can
++ * speak and uses the one in the ack; chiaki sends the BIG straight away with 12. This offers
++ * just 12 and 20 and switches if the console picks 20. Without an answer (older firmware) the
++ * stream goes on with 12, as before. From Takion 13 on, the BIG/BANG key exchange runs on
++ * secp521r1 with a 66 byte shared secret.
++ */
++typedef struct
++{
++	uint32_t items[4];
++	int num;
++} TakionVersions;
++
++static bool encode_takion_versions(pb_ostream_t *ostream, const pb_field_t *field, void *const *arg)
++{
++	const TakionVersions *versions = *arg;
++	for(int i = 0; i < versions->num; i++)
++		if(!pb_encode_tag_for_field(ostream, field) || !pb_encode_varint(ostream, versions->items[i]))
++			return false;
++	return true;
++}
++
++// Called with state_mutex held, from the takion thread.
++static void stream_connection_takion_data_expect_protocol_ack(ChiakiStreamConnection *stream_connection, uint8_t *buf, size_t buf_size)
++{
++	tkproto_TakionMessage msg;
++	memset(&msg, 0, sizeof(msg));
++	pb_istream_t stream = pb_istream_from_buffer(buf, buf_size);
++	if(!pb_decode(&stream, tkproto_TakionMessage_fields, &msg))
++	{
++		CHIAKI_LOGE(stream_connection->log, "StreamConnection failed to decode a message while waiting for the Takion version ack");
++		return;
++	}
++	if(msg.type == tkproto_TakionMessage_PayloadType_TAKIONPROTOCOLREQUESTACK)
++	{
++		stream_connection->protocol_ack_received = true;
++		if(msg.has_takion_protocol_request_ack && msg.takion_protocol_request_ack.has_takion_protocol_version)
++			stream_connection->protocol_ack_version = msg.takion_protocol_request_ack.takion_protocol_version;
++		stream_connection->state_finished = true;
++		chiaki_cond_signal(&stream_connection->state_cond);
++		return;
++	}
++	// Anything else (heartbeat, disconnect) is handled as usual; a disconnect sets
++	// remote_disconnected, which ends the wait.
++	stream_connection_takion_data_idle(stream_connection, buf, buf_size);
++}
++
++// Called with state_mutex held, after the takion connect and before the BIG.
++static void stream_connection_negotiate_takion_version(ChiakiStreamConnection *stream_connection)
++{
++	TakionVersions versions = { .items = { 12, 20 }, .num = 2 };
++	tkproto_TakionMessage msg;
++	memset(&msg, 0, sizeof(msg));
++	msg.type = tkproto_TakionMessage_PayloadType_TAKIONPROTOCOLREQUEST;
++	msg.has_takion_protocol_request = true;
++	msg.takion_protocol_request.supported_takion_versions.arg = &versions;
++	msg.takion_protocol_request.supported_takion_versions.funcs.encode = encode_takion_versions;
++
++	uint8_t buf[64];
++	pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
++	if(!pb_encode(&stream, tkproto_TakionMessage_fields, &msg))
++	{
++		CHIAKI_LOGE(stream_connection->log, "StreamConnection failed to encode the Takion version request, staying on %u",
++				(unsigned)stream_connection->takion.version);
++		return;
++	}
++
++	stream_connection->state = STATE_EXPECT_PROTOCOL_ACK;
++	stream_connection->state_finished = false;
++	stream_connection->state_failed = false;
++	stream_connection->protocol_ack_received = false;
++	stream_connection->protocol_ack_version = 0;
++	stream_connection->takion_version_offered = 20;
++	CHIAKI_LOGI(stream_connection->log, "StreamConnection asking the console for Takion version 12 or 20");
++	ChiakiErrorCode err = chiaki_takion_send_message_data(&stream_connection->takion, 1, 1, buf, stream.bytes_written, NULL);
++	if(err != CHIAKI_ERR_SUCCESS)
++	{
++		CHIAKI_LOGE(stream_connection->log, "StreamConnection failed to send the Takion version request: %s", chiaki_error_string(err));
++		stream_connection->state = STATE_IDLE;
++		return;
++	}
++	chiaki_cond_timedwait_pred(&stream_connection->state_cond, &stream_connection->state_mutex, TAKION_VERSION_TIMEOUT_MS, state_finished_cond_check, stream_connection);
++	const bool got_ack = stream_connection->protocol_ack_received;
++	const uint32_t chosen = stream_connection->protocol_ack_version;
++	stream_connection->state = STATE_IDLE;
++	stream_connection->state_finished = false;
++	stream_connection->state_failed = false;
++
++	if(!got_ack)
++	{
++		CHIAKI_LOGW(stream_connection->log, "StreamConnection got no Takion version ack in %d ms, staying on %u",
++				TAKION_VERSION_TIMEOUT_MS, (unsigned)stream_connection->takion.version);
++		return;
++	}
++	if(chosen != 20)
++	{
++		CHIAKI_LOGI(stream_connection->log, "StreamConnection: console chose Takion version %u, staying on %u",
++				(unsigned)chosen, (unsigned)stream_connection->takion.version);
++		return;
++	}
++	if(!stream_connection->ecdh_p521_active)
++	{
++		if(chiaki_ecdh_init_p521(&stream_connection->ecdh_p521) != CHIAKI_ERR_SUCCESS)
++		{
++			// The console now expects v20; the BANG will fail and the client falls back to 12 on reconnect.
++			CHIAKI_LOGE(stream_connection->log, "StreamConnection failed to create the secp521r1 key");
++			return;
++		}
++		stream_connection->ecdh_p521_active = true;
++	}
++	if(chiaki_takion_set_version(&stream_connection->takion, 20) == CHIAKI_ERR_SUCCESS)
++		CHIAKI_LOGI(stream_connection->log, "StreamConnection streaming with Takion version 20 (key exchange on secp521r1)");
++}
++
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnection *stream_connection, chiaki_socket_t *socket)
+ {
+ 	ChiakiSession *session = stream_connection->session;
+@@ -235,6 +361,17 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
+ 		goto err_congestion_control;
+ 	}
+ 
++	if(chiaki_target_is_ps5(session->target) && !session->connect_info.disable_takion_v20)
++	{
++		stream_connection_negotiate_takion_version(stream_connection);
++		CHECK_STOP(disconnect);
++		if(stream_connection->remote_disconnected)
++		{
++			CHIAKI_LOGE(session->log, "StreamConnection: console disconnected after the Takion version request");
++			goto disconnect;
++		}
++	}
++
+ 	CHIAKI_LOGI(session->log, "StreamConnection sending big");
+ 
+ 	stream_connection->state = STATE_EXPECT_BANG;
+@@ -453,6 +590,9 @@ static void stream_connection_takion_data_protobuf(ChiakiStreamConnection *strea
+ 		case STATE_EXPECT_STREAMINFO:
+ 			stream_connection_takion_data_expect_streaminfo(stream_connection, buf, buf_size);
+ 			break;
++		case STATE_EXPECT_PROTOCOL_ACK:
++			stream_connection_takion_data_expect_protocol_ack(stream_connection, buf, buf_size);
++			break;
+ 		default: // STATE_IDLE
+ 			stream_connection_takion_data_idle(stream_connection, buf, buf_size);
+ 			break;
+@@ -479,6 +619,13 @@ static void stream_connection_takion_data_rumble(ChiakiStreamConnection *stream_
+ 
+ static void stream_connection_takion_data_trigger_effects(ChiakiStreamConnection *stream_connection, uint8_t *buf, size_t buf_size)
+ {
++	// Takion 20 puts 8 extra bytes in front of the trigger message (the extended header);
++	// the 25 bytes after them are the v12 layout. (P5M 0052)
++	if(stream_connection->takion.version >= 20 && buf_size >= 33)
++	{
++		buf += 8;
++		buf_size -= 8;
++	}
+ 	if(buf_size < 25)
+ 	{
+ 		CHIAKI_LOGE(stream_connection->log, "StreamConnection got trigger effects packet with size %#llx < 25",
+@@ -528,12 +675,13 @@ static void stream_connection_takion_data_pad_info(ChiakiStreamConnection *strea
+ 
+ 	switch(buf_size)
+ 	{
++		case 0x1a: // Takion v20 appends one byte (P5M 0052)
+ 		case 0x19:
+ 		{
+ 			// sequence number of feedback packet this is responding to
+ 			uint16_t feedback_packet_seq_num = ntohs(*(chiaki_unaligned_uint16_t *)(buf));
+ 			// int16_t unknown = ntohs(*(chiaki_unaligned_uint16_t *)(buf + 2));
+-			uint32_t timestamp = ntohs(*(chiaki_unaligned_uint32_t *)(buf + 4));
++			uint32_t timestamp = ntohl(*(chiaki_unaligned_uint32_t *)(buf + 4));
+ 			if(stream_connection->haptic_intensity != buf[20])
+ 			{
+ 				stream_connection->haptic_intensity = buf[20];
+@@ -561,6 +709,7 @@ static void stream_connection_takion_data_pad_info(ChiakiStreamConnection *strea
+ 			}
+ 			break;
+ 		}
++		case 0x12: // Takion v20 appends one byte (P5M 0052)
+ 		case 0x11:
+ 		{
+ 			if(stream_connection->haptic_intensity != buf[12])
+@@ -718,17 +867,22 @@ static void stream_connection_takion_data_idle(ChiakiStreamConnection *stream_co
+ 	}
+ }
+ 
++static ChiakiECDH *stream_connection_ecdh(ChiakiStreamConnection *stream_connection)
++{
++	return stream_connection->ecdh_p521_active ? &stream_connection->ecdh_p521 : &stream_connection->session->ecdh;
++}
++
+ static ChiakiErrorCode stream_connection_init_crypt(ChiakiStreamConnection *stream_connection)
+ {
+ 	ChiakiSession *session = stream_connection->session;
+ 
+-	stream_connection->gkcrypt_local = chiaki_gkcrypt_new(stream_connection->log, CHIAKI_GKCRYPT_KEY_BUF_BLOCKS_DEFAULT, 2, session->handshake_key, stream_connection->ecdh_secret);
++	stream_connection->gkcrypt_local = chiaki_gkcrypt_new_secret(stream_connection->log, CHIAKI_GKCRYPT_KEY_BUF_BLOCKS_DEFAULT, 2, session->handshake_key, stream_connection->ecdh_secret, stream_connection->ecdh_secret_size);
+ 	if(!stream_connection->gkcrypt_local)
+ 	{
+ 		CHIAKI_LOGE(stream_connection->log, "StreamConnection failed to initialize local GKCrypt with index 2");
+ 		return CHIAKI_ERR_UNKNOWN;
+ 	}
+-	stream_connection->gkcrypt_remote = chiaki_gkcrypt_new(stream_connection->log, CHIAKI_GKCRYPT_KEY_BUF_BLOCKS_DEFAULT, 3, session->handshake_key, stream_connection->ecdh_secret);
++	stream_connection->gkcrypt_remote = chiaki_gkcrypt_new_secret(stream_connection->log, CHIAKI_GKCRYPT_KEY_BUF_BLOCKS_DEFAULT, 3, session->handshake_key, stream_connection->ecdh_secret, stream_connection->ecdh_secret_size);
+ 	if(!stream_connection->gkcrypt_remote)
+ 	{
+ 		CHIAKI_LOGE(stream_connection->log, "StreamConnection failed to initialize remote GKCrypt with index 3");
+@@ -744,7 +898,7 @@ static ChiakiErrorCode stream_connection_init_crypt(ChiakiStreamConnection *stre
+ 
+ static void stream_connection_takion_data_expect_bang(ChiakiStreamConnection *stream_connection, uint8_t *buf, size_t buf_size)
+ {
+-	char ecdh_pub_key[128];
++	char ecdh_pub_key[160]; // 133 bytes on secp521r1
+ 	ChiakiPBDecodeBuf ecdh_pub_key_buf = { sizeof(ecdh_pub_key), 0, (uint8_t *)ecdh_pub_key };
+ 	char ecdh_sig[32];
+ 	ChiakiPBDecodeBuf ecdh_sig_buf = { sizeof(ecdh_sig), 0, (uint8_t *)ecdh_sig };
+@@ -816,14 +970,16 @@ static void stream_connection_takion_data_expect_bang(ChiakiStreamConnection *st
+ 	}
+ 
+ 	assert(!stream_connection->ecdh_secret);
+-	stream_connection->ecdh_secret = malloc(CHIAKI_ECDH_SECRET_SIZE);
++	ChiakiECDH *ecdh = stream_connection_ecdh(stream_connection);
++	stream_connection->ecdh_secret_size = ecdh->secret_size;
++	stream_connection->ecdh_secret = malloc(CHIAKI_ECDH_SECRET_SIZE_MAX);
+ 	if(!stream_connection->ecdh_secret)
+ 	{
+ 		CHIAKI_LOGE(stream_connection->log, "StreamConnection failed to alloc ECDH secret memory");
+ 		goto error;
+ 	}
+ 
+-	ChiakiErrorCode err = chiaki_ecdh_derive_secret(&stream_connection->session->ecdh,
++	ChiakiErrorCode err = chiaki_ecdh_derive_secret(ecdh,
+ 			stream_connection->ecdh_secret,
+ 			ecdh_pub_key_buf.buf, ecdh_pub_key_buf.size,
+ 			stream_connection->session->handshake_key,
+@@ -1041,11 +1197,11 @@ static ChiakiErrorCode stream_connection_send_big(ChiakiStreamConnection *stream
+ 		return err;
+ 	}
+ 
+-	uint8_t ecdh_pub_key[128];
++	uint8_t ecdh_pub_key[160]; // 133 bytes on secp521r1
+ 	ChiakiPBBuf ecdh_pub_key_buf = { sizeof(ecdh_pub_key), ecdh_pub_key };
+ 	uint8_t ecdh_sig[32];
+ 	ChiakiPBBuf ecdh_sig_buf = { sizeof(ecdh_sig), ecdh_sig };
+-	err = chiaki_ecdh_get_local_pub_key(&session->ecdh,
++	err = chiaki_ecdh_get_local_pub_key(stream_connection_ecdh(stream_connection),
+ 			ecdh_pub_key, &ecdh_pub_key_buf.size,
+ 			session->handshake_key,
+ 			ecdh_sig, &ecdh_sig_buf.size);
+@@ -1071,7 +1227,7 @@ static ChiakiErrorCode stream_connection_send_big(ChiakiStreamConnection *stream
+ 	msg.big_payload.ecdh_sig.arg = &ecdh_sig_buf;
+ 	msg.big_payload.ecdh_sig.funcs.encode = chiaki_pb_encode_buf;
+ 
+-	uint8_t buf[2048];
++	uint8_t buf[4096]; // P5M 0052: room for the 133 byte secp521r1 key
+ 	size_t buf_size;
+ 
+ 	pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
+diff --git a/lib/src/takion.c b/lib/src/takion.c
+index 0233f0f..56abad0 100644
+--- a/lib/src/takion.c
++++ b/lib/src/takion.c
+@@ -157,6 +157,7 @@ typedef struct
+ 	uint8_t *payload; // inside packet_buf
+ 	size_t payload_size;
+ 	uint16_t channel;
++	uint8_t ext; // extended header size the packet was received with, for re-checking its MAC
+ } TakionDataPacketEntry;
+ 
+ typedef struct
+@@ -175,9 +176,9 @@ typedef struct chiaki_takion_postponed_packet_t
+ 
+ static void *takion_thread_func(void *user);
+ static void takion_handle_packet(ChiakiTakion *takion, uint8_t *buf, size_t buf_size);
+-static ChiakiErrorCode takion_handle_packet_mac(ChiakiTakion *takion, uint8_t base_type, uint8_t *buf, size_t buf_size);
+-static void takion_handle_packet_message(ChiakiTakion *takion, uint8_t *buf, size_t buf_size);
+-static void takion_handle_packet_message_data(ChiakiTakion *takion, uint8_t *packet_buf, size_t packet_buf_size, uint8_t type_b, uint8_t *payload, size_t payload_size);
++static ChiakiErrorCode takion_handle_packet_mac(ChiakiTakion *takion, uint8_t base_type, uint8_t *buf, size_t buf_size, size_t ext);
++static void takion_handle_packet_message(ChiakiTakion *takion, uint8_t *buf, size_t buf_size, size_t ext);
++static void takion_handle_packet_message_data(ChiakiTakion *takion, uint8_t *packet_buf, size_t packet_buf_size, uint8_t ext, uint8_t type_b, uint8_t *payload, size_t payload_size);
+ static void takion_handle_packet_message_data_ack(ChiakiTakion *takion, uint8_t flags, uint8_t *buf, size_t buf_size);
+ static ChiakiErrorCode takion_parse_message(ChiakiTakion *takion, uint8_t *buf, size_t buf_size, TakionMessage *msg);
+ static void takion_write_message_header(uint8_t *buf, uint32_t tag, uint64_t key_pos, uint8_t chunk_type, uint8_t chunk_flags, size_t payload_data_size);
+@@ -197,6 +198,14 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
+ 	takion->close_socket = info->close_socket;
+ 	takion->version = info->protocol_version;
+ 	takion->disable_audio_video = info->disable_audio_video;
++	takion->ext_size = 0;
++	takion->ext_counter = 0;
++	takion->ext_clock_start_us = 0;
++	takion->ext_rx_have_prev = false;
++	takion->ext_rx_window_start_us = 0;
++	takion->ext_rx_count = 0;
++	takion->ext_rx_abs_sum_us = 0;
++	takion->ext_rx_abs_max_us = 0;
+ 
+ 	switch(takion->version)
+ 	{
+@@ -577,7 +586,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_raw(ChiakiTakion *takion, const
+ 	return CHIAKI_ERR_SUCCESS;
+ }
+ 
+-static ChiakiErrorCode chiaki_takion_packet_read_key_pos(ChiakiTakion *takion, uint8_t *buf, size_t buf_size, uint64_t *key_pos_out)
++static ChiakiErrorCode chiaki_takion_packet_read_key_pos(ChiakiTakion *takion, uint8_t *buf, size_t buf_size, size_t ext, uint64_t *key_pos_out)
+ {
+ 	if(buf_size < 1)
+ 		return CHIAKI_ERR_BUF_TOO_SMALL;
+@@ -586,6 +595,7 @@ static ChiakiErrorCode chiaki_takion_packet_read_key_pos(ChiakiTakion *takion, u
+ 	int key_pos_offset = takion_packet_type_key_pos_offset(base_type);
+ 	if(key_pos_offset < 0)
+ 		return CHIAKI_ERR_INVALID_DATA;
++	key_pos_offset += (int)ext;
+ 
+ 	if(buf_size < key_pos_offset + sizeof(uint32_t))
+ 		return CHIAKI_ERR_BUF_TOO_SMALL;
+@@ -596,7 +606,114 @@ static ChiakiErrorCode chiaki_takion_packet_read_key_pos(ChiakiTakion *takion, u
+ 	return CHIAKI_ERR_SUCCESS;
+ }
+ 
++/**
++ * Size of the v20 extended header for a packet of this base type.
++ * Chunk-based packets (control, handshake, client info) never carry it, only the
++ * AV, feedback, congestion and newer packet types do.
++ */
++static size_t takion_ext_for_type(ChiakiTakion *takion, uint8_t base_type)
++{
++	switch(base_type)
++	{
++		case TAKION_PACKET_TYPE_CONTROL:
++		case TAKION_PACKET_TYPE_HANDSHAKE:
++		case TAKION_PACKET_TYPE_CLIENT_INFO:
++			return 0;
++		default:
++			return takion->ext_size;
++	}
++}
++
++static ChiakiErrorCode takion_packet_mac_ext(ChiakiGKCrypt *crypt, uint8_t *buf, size_t buf_size, size_t ext, uint64_t key_pos, uint8_t *mac_out, uint8_t *mac_old_out);
++static ChiakiErrorCode takion_send_ext(ChiakiTakion *takion, uint8_t *buf, size_t buf_size, size_t ext, uint64_t key_pos);
++
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_packet_mac(ChiakiGKCrypt *crypt, uint8_t *buf, size_t buf_size, uint64_t key_pos, uint8_t *mac_out, uint8_t *mac_old_out)
++{
++	return takion_packet_mac_ext(crypt, buf, buf_size, 0, key_pos, mac_out, mac_old_out);
++}
++
++/*
++ * Takion v20 extended header (ported from P5M patch 0052).
++ *
++ * From v20 on, every packet carries 8 bytes right after the type byte: the
++ * sender's send time in microseconds (u32 BE, from a clock started when the
++ * version was switched) and a running packet counter (u32 BE). Everything
++ * after it, MAC and key_pos included, moves by 8. The header is filled just
++ * before the MAC, which covers it. The receiver uses consecutive send times
++ * to see the one-way delay growing before packets get lost.
++ */
++static void takion_ext_header_write(ChiakiTakion *takion, uint8_t *buf)
++{
++	// call with gkcrypt_local_mutex held
++	uint32_t send_us = (uint32_t)(chiaki_time_now_monotonic_us() - takion->ext_clock_start_us);
++	*((chiaki_unaligned_uint32_t *)(buf + 1)) = htonl(send_us);
++	*((chiaki_unaligned_uint32_t *)(buf + 5)) = htonl(takion->ext_counter++);
++}
++
++// Takion thread only. One diary line every ten seconds with the delay variation the console's send times show.
++static void takion_ext_header_read(ChiakiTakion *takion, const uint8_t *buf, size_t buf_size)
++{
++	if(buf_size < 1 + CHIAKI_TAKION_EXT_HEADER_SIZE)
++		return;
++	uint64_t now_us = chiaki_time_now_monotonic_us();
++	uint32_t remote_us = ntohl(*((chiaki_unaligned_uint32_t *)(buf + 1)));
++	if(takion->ext_rx_have_prev)
++	{
++		int64_t local_delta = (int64_t)(now_us - takion->ext_rx_prev_local_us);
++		int64_t remote_delta = (int32_t)(remote_us - takion->ext_rx_prev_remote_us);
++		int64_t variation = local_delta - remote_delta;
++		uint64_t abs_variation = (uint64_t)(variation < 0 ? -variation : variation);
++		takion->ext_rx_abs_sum_us += abs_variation;
++		if(abs_variation > takion->ext_rx_abs_max_us)
++			takion->ext_rx_abs_max_us = abs_variation > UINT32_MAX ? UINT32_MAX : (uint32_t)abs_variation;
++		takion->ext_rx_count++;
++	}
++	else
++		takion->ext_rx_window_start_us = now_us;
++	takion->ext_rx_have_prev = true;
++	takion->ext_rx_prev_local_us = now_us;
++	takion->ext_rx_prev_remote_us = remote_us;
++
++	if(now_us - takion->ext_rx_window_start_us >= 10000000 && takion->ext_rx_count > 0)
++	{
++		CHIAKI_LOGI(takion->log, "Takion v20 10s: %llu packets, one-way delay variation avg %llu us, max %u us",
++				(unsigned long long)takion->ext_rx_count,
++				(unsigned long long)(takion->ext_rx_abs_sum_us / takion->ext_rx_count),
++				takion->ext_rx_abs_max_us);
++		takion->ext_rx_window_start_us = now_us;
++		takion->ext_rx_count = 0;
++		takion->ext_rx_abs_sum_us = 0;
++		takion->ext_rx_abs_max_us = 0;
++	}
++}
++
++CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_set_version(ChiakiTakion *takion, uint8_t version)
++{
++	switch(version)
++	{
++		case 12:
++			takion->av_packet_parse = chiaki_takion_v12_av_packet_parse;
++			break;
++		case 20:
++			takion->av_packet_parse = chiaki_takion_v20_av_packet_parse;
++			break;
++		default:
++			CHIAKI_LOGE(takion->log, "Takion can't switch to protocol version %u", (unsigned int)version);
++			return CHIAKI_ERR_INVALID_DATA;
++	}
++	chiaki_mutex_lock(&takion->gkcrypt_local_mutex);
++	takion->ext_clock_start_us = chiaki_time_now_monotonic_us();
++	takion->ext_counter = 0;
++	takion->ext_rx_have_prev = false;
++	takion->version = version;
++	takion->ext_size = version >= 20 ? CHIAKI_TAKION_EXT_HEADER_SIZE : 0;
++	chiaki_mutex_unlock(&takion->gkcrypt_local_mutex);
++	CHIAKI_LOGI(takion->log, "Takion switched to protocol version %u%s", (unsigned int)version,
++			takion->ext_size ? " with extended header" : "");
++	return CHIAKI_ERR_SUCCESS;
++}
++
++static ChiakiErrorCode takion_packet_mac_ext(ChiakiGKCrypt *crypt, uint8_t *buf, size_t buf_size, size_t ext, uint64_t key_pos, uint8_t *mac_out, uint8_t *mac_old_out)
+ {
+ 	if(buf_size < 1)
+ 		return CHIAKI_ERR_BUF_TOO_SMALL;
+@@ -606,6 +723,8 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_packet_mac(ChiakiGKCrypt *crypt, uin
+ 	int key_pos_offset = takion_packet_type_key_pos_offset(base_type);
+ 	if(mac_offset < 0 || key_pos_offset < 0)
+ 		return CHIAKI_ERR_INVALID_DATA;
++	mac_offset += (int)ext;
++	key_pos_offset += (int)ext;
+ 
+ 	if(buf_size < mac_offset + CHIAKI_GKCRYPT_GMAC_SIZE || buf_size < key_pos_offset + sizeof(uint32_t))
+ 		return CHIAKI_ERR_BUF_TOO_SMALL;
+@@ -637,12 +756,23 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_packet_mac(ChiakiGKCrypt *crypt, uin
+ }
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send(ChiakiTakion *takion, uint8_t *buf, size_t buf_size, uint64_t key_pos)
++{
++	return takion_send_ext(takion, buf, buf_size, 0, key_pos);
++}
++
++/**
++ * Like chiaki_takion_send, for a packet built with ext bytes reserved after the type byte.
++ * ext is the caller's snapshot of takion->ext_size, so a version switch can't change the layout mid-packet.
++ */
++static ChiakiErrorCode takion_send_ext(ChiakiTakion *takion, uint8_t *buf, size_t buf_size, size_t ext, uint64_t key_pos)
+ {
+ 	ChiakiErrorCode err = chiaki_mutex_lock(&takion->gkcrypt_local_mutex);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		return err;
+ 	uint8_t mac[CHIAKI_GKCRYPT_GMAC_SIZE];
+-	err = chiaki_takion_packet_mac(takion->gkcrypt_local, buf, buf_size, key_pos, mac, NULL);
++	if(ext)
++		takion_ext_header_write(takion, buf);
++	err = takion_packet_mac_ext(takion->gkcrypt_local, buf, buf_size, ext, key_pos, mac, NULL);
+ 	chiaki_mutex_unlock(&takion->gkcrypt_local_mutex);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		return err;
+@@ -686,15 +816,16 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_message_data(ChiakiTakion *taki
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		return err;
+ 
+-	size_t packet_size = 1 + TAKION_MESSAGE_HEADER_SIZE + 9 + buf_size;
++	size_t ext = takion_ext_for_type(takion, TAKION_PACKET_TYPE_CONTROL);
++	size_t packet_size = 1 + ext + TAKION_MESSAGE_HEADER_SIZE + 9 + buf_size;
+ 	uint8_t *packet_buf = malloc(packet_size);
+ 	if(!packet_buf)
+ 		return CHIAKI_ERR_MEMORY;
+ 	packet_buf[0] = TAKION_PACKET_TYPE_CONTROL;
+ 
+-	takion_write_message_header(packet_buf + 1, takion->tag_remote, key_pos, TAKION_CHUNK_TYPE_DATA, chunk_flags, 9 + buf_size);
++	takion_write_message_header(packet_buf + 1 + ext, takion->tag_remote, key_pos, TAKION_CHUNK_TYPE_DATA, chunk_flags, 9 + buf_size);
+ 
+-	uint8_t *msg_payload = packet_buf + 1 + TAKION_MESSAGE_HEADER_SIZE;
++	uint8_t *msg_payload = packet_buf + 1 + ext + TAKION_MESSAGE_HEADER_SIZE;
+ 
+ 	err = chiaki_mutex_lock(&takion->seq_num_local_mutex);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+@@ -708,7 +839,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_message_data(ChiakiTakion *taki
+ 	*(msg_payload + 8) = 0;
+ 	memcpy(msg_payload + 9, buf, buf_size);
+ 
+-	err = chiaki_takion_send(takion, packet_buf, packet_size, key_pos); // will alter packet_buf with gmac
++	err = takion_send_ext(takion, packet_buf, packet_size, ext, key_pos); // will alter packet_buf with gmac
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 	{
+ 		CHIAKI_LOGE(takion->log, "Takion failed to send data packet: %s", chiaki_error_string(err));
+@@ -736,15 +867,16 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_message_data_cont(ChiakiTakion
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		return err;
+ 
+-	size_t packet_size = 1 + TAKION_MESSAGE_HEADER_SIZE + 8 + buf_size;
++	size_t ext = takion_ext_for_type(takion, TAKION_PACKET_TYPE_CONTROL);
++	size_t packet_size = 1 + ext + TAKION_MESSAGE_HEADER_SIZE + 8 + buf_size;
+ 	uint8_t *packet_buf = malloc(packet_size);
+ 	if(!packet_buf)
+ 		return CHIAKI_ERR_MEMORY;
+ 	packet_buf[0] = TAKION_PACKET_TYPE_CONTROL;
+ 
+-	takion_write_message_header(packet_buf + 1, takion->tag_remote, key_pos, TAKION_CHUNK_TYPE_DATA, chunk_flags, 8 + buf_size);
++	takion_write_message_header(packet_buf + 1 + ext, takion->tag_remote, key_pos, TAKION_CHUNK_TYPE_DATA, chunk_flags, 8 + buf_size);
+ 
+-	uint8_t *msg_payload = packet_buf + 1 + TAKION_MESSAGE_HEADER_SIZE;
++	uint8_t *msg_payload = packet_buf + 1 + ext + TAKION_MESSAGE_HEADER_SIZE;
+ 
+ 	err = chiaki_mutex_lock(&takion->seq_num_local_mutex);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+@@ -757,7 +889,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_message_data_cont(ChiakiTakion
+ 	*((chiaki_unaligned_uint16_t *)(msg_payload + 6)) = 0;
+ 	memcpy(msg_payload + 8, buf, buf_size);
+ 
+-	err = chiaki_takion_send(takion, packet_buf, packet_size, key_pos); // will alter packet_buf with gmac
++	err = takion_send_ext(takion, packet_buf, packet_size, ext, key_pos); // will alter packet_buf with gmac
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 	{
+ 		CHIAKI_LOGE(takion->log, "Takion failed to send data packet: %s", chiaki_error_string(err));
+@@ -777,23 +909,25 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_message_data_cont(ChiakiTakion
+ 
+ static ChiakiErrorCode chiaki_takion_send_message_data_ack(ChiakiTakion *takion, uint32_t seq_num)
+ {
+-	uint8_t buf[1 + TAKION_MESSAGE_HEADER_SIZE + 0xc];
++	uint8_t buf[1 + CHIAKI_TAKION_EXT_HEADER_SIZE + TAKION_MESSAGE_HEADER_SIZE + 0xc];
++	size_t ext = takion_ext_for_type(takion, TAKION_PACKET_TYPE_CONTROL);
++	size_t buf_size = 1 + ext + TAKION_MESSAGE_HEADER_SIZE + 0xc;
+ 	buf[0] = TAKION_PACKET_TYPE_CONTROL;
+ 
+ 	uint64_t key_pos;
+-	ChiakiErrorCode err = chiaki_takion_crypt_advance_key_pos(takion, sizeof(buf), &key_pos);
++	ChiakiErrorCode err = chiaki_takion_crypt_advance_key_pos(takion, 1 + TAKION_MESSAGE_HEADER_SIZE + 0xc, &key_pos);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		return err;
+ 
+-	takion_write_message_header(buf + 1, takion->tag_remote, key_pos, TAKION_CHUNK_TYPE_DATA_ACK, 0, 0xc);
++	takion_write_message_header(buf + 1 + ext, takion->tag_remote, key_pos, TAKION_CHUNK_TYPE_DATA_ACK, 0, 0xc);
+ 
+-	uint8_t *data_ack = buf + 1 + TAKION_MESSAGE_HEADER_SIZE;
++	uint8_t *data_ack = buf + 1 + ext + TAKION_MESSAGE_HEADER_SIZE;
+ 	*((chiaki_unaligned_uint32_t *)(data_ack + 0)) = htonl(seq_num);
+ 	*((chiaki_unaligned_uint32_t *)(data_ack + 4)) = htonl(takion->a_rwnd);
+ 	*((chiaki_unaligned_uint16_t *)(data_ack + 8)) = 0;
+ 	*((chiaki_unaligned_uint16_t *)(data_ack + 0xa)) = 0;
+ 
+-	return chiaki_takion_send(takion, buf, sizeof(buf), key_pos);
++	return takion_send_ext(takion, buf, buf_size, ext, key_pos);
+ }
+ 
+ CHIAKI_EXPORT void chiaki_takion_format_congestion(uint8_t *buf, ChiakiTakionCongestionPacket *packet, uint64_t key_pos)
+@@ -813,16 +947,29 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_congestion(ChiakiTakion *takion
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		return err;
+ 
+-	uint8_t buf[CHIAKI_TAKION_CONGESTION_PACKET_SIZE];
+-	chiaki_takion_format_congestion(buf, packet, key_pos);
+-	return chiaki_takion_send(takion, buf, sizeof(buf), key_pos);
++	uint8_t buf[CHIAKI_TAKION_EXT_HEADER_SIZE + CHIAKI_TAKION_CONGESTION_PACKET_SIZE];
++	size_t ext = takion->ext_size;
++	if(ext)
++	{
++		// v20: same fields, 8 bytes later
++		uint8_t plain[CHIAKI_TAKION_CONGESTION_PACKET_SIZE];
++		chiaki_takion_format_congestion(plain, packet, key_pos);
++		buf[0] = plain[0];
++		memcpy(buf + 1 + ext, plain + 1, sizeof(plain) - 1);
++	}
++	else
++		chiaki_takion_format_congestion(buf, packet, key_pos);
++	return takion_send_ext(takion, buf, CHIAKI_TAKION_CONGESTION_PACKET_SIZE + ext, ext, key_pos);
+ }
+ 
+-static ChiakiErrorCode takion_send_feedback_packet(ChiakiTakion *takion, uint8_t *buf, size_t buf_size)
++/**
++ * buf: type, ext bytes (v20), seq (2), 0, key_pos (4), gmac (4), payload.
++ */
++static ChiakiErrorCode takion_send_feedback_packet(ChiakiTakion *takion, uint8_t *buf, size_t buf_size, size_t ext)
+ {
+-	assert(buf_size >= 0xc);
++	assert(buf_size >= 0xc + ext);
+ 
+-	size_t payload_size = buf_size - 0xc;
++	size_t payload_size = buf_size - 0xc - ext;
+ 
+ 	ChiakiErrorCode err = chiaki_mutex_lock(&takion->gkcrypt_local_mutex);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+@@ -833,13 +980,15 @@ static ChiakiErrorCode takion_send_feedback_packet(ChiakiTakion *takion, uint8_t
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		goto beach;
+ 
+-	err = chiaki_gkcrypt_encrypt(takion->gkcrypt_local, key_pos + CHIAKI_GKCRYPT_BLOCK_SIZE, buf + 0xc, payload_size);
++	err = chiaki_gkcrypt_encrypt(takion->gkcrypt_local, key_pos + CHIAKI_GKCRYPT_BLOCK_SIZE, buf + 0xc + ext, payload_size);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		goto beach;
+ 
+-	*((chiaki_unaligned_uint32_t *)(buf + 4)) = htonl((uint32_t)key_pos);
++	*((chiaki_unaligned_uint32_t *)(buf + 4 + ext)) = htonl((uint32_t)key_pos);
++	if(ext)
++		takion_ext_header_write(takion, buf);
+ 
+-	err = chiaki_gkcrypt_gmac(takion->gkcrypt_local, key_pos, buf, buf_size, buf + 8);
++	err = chiaki_gkcrypt_gmac(takion->gkcrypt_local, key_pos, buf, buf_size, buf + 8 + ext);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		goto beach;
+ 
+@@ -852,24 +1001,27 @@ beach:
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_feedback_state(ChiakiTakion *takion, ChiakiSeqNum16 seq_num, ChiakiFeedbackState *feedback_state)
+ {
+-	uint8_t buf[0xc + CHIAKI_FEEDBACK_STATE_BUF_SIZE_MAX];
++	uint8_t buf[0xc + CHIAKI_TAKION_EXT_HEADER_SIZE + CHIAKI_FEEDBACK_STATE_BUF_SIZE_MAX];
++	size_t ext = takion->ext_size;
+ 	buf[0] = TAKION_PACKET_TYPE_FEEDBACK_STATE;
+-	*((chiaki_unaligned_uint16_t *)(buf + 1)) = htons(seq_num);
+-	buf[3] = 0; // number of states in the packet less one
+-	*((chiaki_unaligned_uint32_t *)(buf + 4)) = 0; // key pos
+-	*((chiaki_unaligned_uint32_t *)(buf + 8)) = 0; // gmac
++	memset(buf + 1, 0, ext);
++	*((chiaki_unaligned_uint16_t *)(buf + 1 + ext)) = htons(seq_num);
++	buf[3 + ext] = 0; // number of states in the packet less one
++	*((chiaki_unaligned_uint32_t *)(buf + 4 + ext)) = 0; // key pos
++	*((chiaki_unaligned_uint32_t *)(buf + 8 + ext)) = 0; // gmac
+ 	size_t buf_sz;
+ 	if(takion->version <= 9)
+ 	{
+-		buf_sz = 0xc + CHIAKI_FEEDBACK_STATE_BUF_SIZE_V9;
+-		chiaki_feedback_state_format_v9(buf + 0xc, feedback_state);
++		buf_sz = 0xc + ext + CHIAKI_FEEDBACK_STATE_BUF_SIZE_V9;
++		chiaki_feedback_state_format_v9(buf + 0xc + ext, feedback_state);
+ 	}
+ 	else
+ 	{
+-		buf_sz = 0xc + CHIAKI_FEEDBACK_STATE_BUF_SIZE_V12;
+-		chiaki_feedback_state_format_v12(buf + 0xc, feedback_state);
++		// v12 and v20 use the same 28 byte state
++		buf_sz = 0xc + ext + CHIAKI_FEEDBACK_STATE_BUF_SIZE_V12;
++		chiaki_feedback_state_format_v12(buf + 0xc + ext, feedback_state);
+ 	}
+-	return takion_send_feedback_packet(takion, buf, buf_sz);
++	return takion_send_feedback_packet(takion, buf, buf_sz, ext);
+ }
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_mic_packet(ChiakiTakion *takion, uint8_t *buf, size_t buf_size, bool ps5)
+@@ -879,21 +1031,41 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_mic_packet(ChiakiTakion *takion
+ 		ps5_packet = 1;
+ 	size_t payload_size = buf_size - 19 - ps5_packet;
+ 
++	// The audio sender builds the v12 layout; v20 needs the extended header after the type byte.
++	size_t ext = takion->ext_size;
++	uint8_t *ext_buf = NULL;
++	if(ext)
++	{
++		ext_buf = malloc(buf_size + ext);
++		if(!ext_buf)
++			return CHIAKI_ERR_MEMORY;
++		ext_buf[0] = buf[0];
++		memset(ext_buf + 1, 0, ext);
++		memcpy(ext_buf + 1 + ext, buf + 1, buf_size - 1);
++		buf = ext_buf;
++		buf_size += ext;
++	}
++
+ 	ChiakiErrorCode err = chiaki_mutex_lock(&takion->gkcrypt_local_mutex);
+ 	if(err != CHIAKI_ERR_SUCCESS)
++	{
++		free(ext_buf);
+ 		return err;
++	}
+ 	uint64_t key_pos;
+ 	err = chiaki_takion_crypt_advance_key_pos(takion, payload_size + CHIAKI_GKCRYPT_BLOCK_SIZE, &key_pos);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		goto beach;
+ 
+-	err = chiaki_gkcrypt_encrypt(takion->gkcrypt_local, key_pos + CHIAKI_GKCRYPT_BLOCK_SIZE, buf + 19 + ps5_packet, payload_size);
++	err = chiaki_gkcrypt_encrypt(takion->gkcrypt_local, key_pos + CHIAKI_GKCRYPT_BLOCK_SIZE, buf + 19 + ext + ps5_packet, payload_size);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		goto beach;
+ 
+-	*((chiaki_unaligned_uint32_t *)(buf + 14)) = htonl((uint32_t)key_pos);
++	*((chiaki_unaligned_uint32_t *)(buf + 14 + ext)) = htonl((uint32_t)key_pos);
++	if(ext)
++		takion_ext_header_write(takion, buf);
+ 
+-	err = chiaki_gkcrypt_gmac(takion->gkcrypt_local, key_pos, buf, buf_size, buf + 10);
++	err = chiaki_gkcrypt_gmac(takion->gkcrypt_local, key_pos, buf, buf_size, buf + 10 + ext);
+ 
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		goto beach;
+@@ -901,24 +1073,27 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_mic_packet(ChiakiTakion *takion
+ 	chiaki_takion_send_raw(takion, buf, buf_size);
+ beach:
+ 	chiaki_mutex_unlock(&takion->gkcrypt_local_mutex);
++	free(ext_buf);
+ 	return err;
+ }
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_feedback_history(ChiakiTakion *takion, ChiakiSeqNum16 seq_num, uint8_t event_count, uint8_t *payload, size_t payload_size)
+ {
+-	size_t buf_size = 0xc + payload_size;
++	size_t ext = takion->ext_size;
++	size_t buf_size = 0xc + ext + payload_size;
+ 	uint8_t *buf = malloc(buf_size);
+ 	if(!buf)
+ 		return CHIAKI_ERR_MEMORY;
+ 	buf[0] = TAKION_PACKET_TYPE_FEEDBACK_HISTORY;
+-	*((chiaki_unaligned_uint16_t *)(buf + 1)) = htons(seq_num);
++	memset(buf + 1, 0, ext);
++	*((chiaki_unaligned_uint16_t *)(buf + 1 + ext)) = htons(seq_num);
+ 	// number of events in the payload less one: the console adds one back, so the full count
+ 	// would make it read past the payload and reject the packet
+-	buf[3] = event_count ? event_count - 1 : 0;
+-	*((chiaki_unaligned_uint32_t *)(buf + 4)) = 0; // key pos
+-	*((chiaki_unaligned_uint32_t *)(buf + 8)) = 0; // gmac
+-	memcpy(buf + 0xc, payload, payload_size);
+-	ChiakiErrorCode err = takion_send_feedback_packet(takion, buf, buf_size);
++	buf[3 + ext] = event_count ? event_count - 1 : 0;
++	*((chiaki_unaligned_uint32_t *)(buf + 4 + ext)) = 0; // key pos
++	*((chiaki_unaligned_uint32_t *)(buf + 8 + ext)) = 0; // gmac
++	memcpy(buf + 0xc + ext, payload, payload_size);
++	ChiakiErrorCode err = takion_send_feedback_packet(takion, buf, buf_size, ext);
+ 	free(buf);
+ 	return err;
+ }
+@@ -1210,7 +1385,7 @@ static void *takion_thread_func(void *user)
+ 				if(packet->packet_size == 0)
+ 					continue;
+ 				uint8_t base_type = (uint8_t)(packet->packet_buf[0] & TAKION_PACKET_BASE_TYPE_MASK);
+-				if(takion_handle_packet_mac(takion, base_type, packet->packet_buf, packet->packet_size) != CHIAKI_ERR_SUCCESS)
++				if(takion_handle_packet_mac(takion, base_type, packet->packet_buf, packet->packet_size, packet->ext) != CHIAKI_ERR_SUCCESS)
+ 				{
+ 					CHIAKI_LOGW(takion->log, "Found an invalid MAC");
+ 					chiaki_reorder_queue_drop(&takion->data_queue, i);
+@@ -1324,7 +1499,7 @@ static ChiakiErrorCode takion_recv(ChiakiTakion *takion, uint8_t *buf, size_t *b
+ 	return CHIAKI_ERR_SUCCESS;
+ }
+ 
+-static ChiakiErrorCode takion_handle_packet_mac(ChiakiTakion *takion, uint8_t base_type, uint8_t *buf, size_t buf_size)
++static ChiakiErrorCode takion_handle_packet_mac(ChiakiTakion *takion, uint8_t base_type, uint8_t *buf, size_t buf_size, size_t ext)
+ {
+ 	if(!takion->gkcrypt_remote)
+ 		return CHIAKI_ERR_SUCCESS;
+@@ -1332,13 +1507,13 @@ static ChiakiErrorCode takion_handle_packet_mac(ChiakiTakion *takion, uint8_t ba
+ 	uint8_t mac[CHIAKI_GKCRYPT_GMAC_SIZE];
+ 	uint8_t mac_expected[CHIAKI_GKCRYPT_GMAC_SIZE];
+ 	uint64_t key_pos;
+-	ChiakiErrorCode err = chiaki_takion_packet_read_key_pos(takion, buf, buf_size, &key_pos);
++	ChiakiErrorCode err = chiaki_takion_packet_read_key_pos(takion, buf, buf_size, ext, &key_pos);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 	{
+ 		CHIAKI_LOGE(takion->log, "Takion failed to pull key_pos out of received packet");
+ 		return err;
+ 	}
+-	err = chiaki_takion_packet_mac(takion->gkcrypt_remote, buf, buf_size, key_pos, mac_expected, mac);
++	err = takion_packet_mac_ext(takion->gkcrypt_remote, buf, buf_size, ext, key_pos, mac_expected, mac);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 	{
+ 		CHIAKI_LOGE(takion->log, "Takion failed to calculate mac for received packet");
+@@ -1391,17 +1566,26 @@ static void takion_handle_packet(ChiakiTakion *takion, uint8_t *buf, size_t buf_
+ {
+ 	assert(buf_size > 0);
+ 	uint8_t base_type = (uint8_t)(buf[0] & TAKION_PACKET_BASE_TYPE_MASK);
++	size_t ext = takion_ext_for_type(takion, base_type);
++	if(buf_size < 1 + ext)
++	{
++		free(buf);
++		return;
++	}
+ 
+-	if(takion_handle_packet_mac(takion, base_type, buf, buf_size) != CHIAKI_ERR_SUCCESS)
++	if(takion_handle_packet_mac(takion, base_type, buf, buf_size, ext) != CHIAKI_ERR_SUCCESS)
+ 	{
+ 		free(buf);
+ 		return;
+ 	}
+ 
++	if(ext)
++		takion_ext_header_read(takion, buf, buf_size);
++
+ 	switch(base_type)
+ 	{
+ 		case TAKION_PACKET_TYPE_CONTROL:
+-			takion_handle_packet_message(takion, buf, buf_size);
++			takion_handle_packet_message(takion, buf, buf_size, ext);
+ 			break;
+ 		case TAKION_PACKET_TYPE_VIDEO:
+ 		case TAKION_PACKET_TYPE_AUDIO:
+@@ -1419,10 +1603,10 @@ static void takion_handle_packet(ChiakiTakion *takion, uint8_t *buf, size_t buf_
+ }
+ 
+ 
+-static void takion_handle_packet_message(ChiakiTakion *takion, uint8_t *buf, size_t buf_size)
++static void takion_handle_packet_message(ChiakiTakion *takion, uint8_t *buf, size_t buf_size, size_t ext)
+ {
+ 	TakionMessage msg;
+-	ChiakiErrorCode err = takion_parse_message(takion, buf+1, buf_size-1, &msg);
++	ChiakiErrorCode err = takion_parse_message(takion, buf + 1 + ext, buf_size - 1 - ext, &msg);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 	{
+ 		free(buf);
+@@ -1435,7 +1619,7 @@ static void takion_handle_packet_message(ChiakiTakion *takion, uint8_t *buf, siz
+ 	switch(msg.chunk_type)
+ 	{
+ 		case TAKION_CHUNK_TYPE_DATA:
+-			takion_handle_packet_message_data(takion, buf, buf_size, msg.chunk_flags, msg.payload, msg.payload_size);
++			takion_handle_packet_message_data(takion, buf, buf_size, (uint8_t)ext, msg.chunk_flags, msg.payload, msg.payload_size);
+ 			break;
+ 		case TAKION_CHUNK_TYPE_DATA_ACK:
+ 			takion_handle_packet_message_data_ack(takion, msg.chunk_flags, msg.payload, msg.payload_size);
+@@ -1499,7 +1683,7 @@ static void takion_flush_data_queue(ChiakiTakion *takion)
+ 		chiaki_takion_send_message_data_ack(takion, (uint32_t)seq_num);
+ }
+ 
+-static void takion_handle_packet_message_data(ChiakiTakion *takion, uint8_t *packet_buf, size_t packet_buf_size, uint8_t type_b, uint8_t *payload, size_t payload_size)
++static void takion_handle_packet_message_data(ChiakiTakion *takion, uint8_t *packet_buf, size_t packet_buf_size, uint8_t ext, uint8_t type_b, uint8_t *payload, size_t payload_size)
+ {
+ 	if(type_b != 1)
+ 		CHIAKI_LOGW(takion->log, "Takion received data with type_b = %#x (was expecting %#x)", type_b, 1);
+@@ -1517,6 +1701,7 @@ static void takion_handle_packet_message_data(ChiakiTakion *takion, uint8_t *pac
+ 	entry->type_b = type_b;
+ 	entry->packet_buf = packet_buf;
+ 	entry->packet_size = packet_buf_size;
++	entry->ext = ext;
+ 	entry->payload = payload;
+ 	entry->payload_size = payload_size;
+ 	entry->channel = ntohs(*((chiaki_unaligned_uint16_t *)(payload + 4)));
+@@ -1821,11 +2006,12 @@ static void takion_handle_packet_av(ChiakiTakion *takion, uint8_t base_type, uin
+ 	takion_av_queue_flush_with_timeout(takion, queue, head_wait, head_wait_seq_num);
+ }
+ 
+-static ChiakiErrorCode av_packet_parse(bool v12, ChiakiTakionAVPacket *packet, ChiakiKeyState *key_state, uint8_t *buf, size_t buf_size)
++static ChiakiErrorCode av_packet_parse(bool v12, bool v20, ChiakiTakionAVPacket *packet, ChiakiKeyState *key_state, uint8_t *buf, size_t buf_size)
+ {
+ 	memset(packet, 0, sizeof(ChiakiTakionAVPacket));
+ 
+-	if(buf_size < 1)
++	size_t ext = v20 ? CHIAKI_TAKION_EXT_HEADER_SIZE : 0;
++	if(buf_size < 1 + ext)
+ 		return CHIAKI_ERR_BUF_TOO_SMALL;
+ 
+ 	uint8_t base_type = buf[0] & TAKION_PACKET_BASE_TYPE_MASK;
+@@ -1834,11 +2020,13 @@ static ChiakiErrorCode av_packet_parse(bool v12, ChiakiTakionAVPacket *packet, C
+ 		return CHIAKI_ERR_INVALID_DATA;
+ 
+ 	packet->is_video = base_type == TAKION_PACKET_TYPE_VIDEO;
++	packet->audio_kind = 0;
++	packet->audio_single_unit = false;
+ 
+ 	packet->uses_nalu_info_structs = ((buf[0] >> 4) & 1) != 0;
+ 
+-	uint8_t *av = buf+1;
+-	size_t av_size = buf_size-1;
++	uint8_t *av = buf + 1 + ext;
++	size_t av_size = buf_size - 1 - ext;
+ 	size_t av_header_size = v12
+ 		? (packet->is_video ? CHIAKI_TAKION_V12_AV_HEADER_SIZE_VIDEO : CHIAKI_TAKION_V12_AV_HEADER_SIZE_AUDIO)
+ 		: (packet->is_video ? CHIAKI_TAKION_V9_AV_HEADER_SIZE_VIDEO : CHIAKI_TAKION_V9_AV_HEADER_SIZE_AUDIO);
+@@ -1861,6 +2049,10 @@ static ChiakiErrorCode av_packet_parse(bool v12, ChiakiTakionAVPacket *packet, C
+ 		packet->units_in_frame_total = (uint16_t)(((dword_2 >> 0x10) & 0xff) + 1);
+ 		packet->units_in_frame_fec = (uint16_t)(dword_2 & 0xffff);
+ 	}
++	// v20 audio: bits 12-15 are a mode. In mode 2 the low 12 bits are the FEC unit count and every
++	// unit has the same size (data size / total units); translated below to the v12 layout.
++	uint8_t v20_audio_mode = (v20 && !packet->is_video) ? (uint8_t)((dword_2 >> 12) & 0xf) : 0;
++	uint16_t v20_audio_fec = (uint16_t)(dword_2 & 0xfff);
+ 
+ 	packet->codec = av[8];
+ 	uint32_t key_pos_low = ntohl(*((chiaki_unaligned_uint32_t *)(av + 0xd)));
+@@ -1902,7 +2094,9 @@ static ChiakiErrorCode av_packet_parse(bool v12, ChiakiTakionAVPacket *packet, C
+ 
+ 	if(v12 && !packet->is_video)
+ 	{
+-		packet->is_haptics = *av == 0x02;
++		// v20 uses the high nibble of this byte for something new
++		packet->audio_kind = *av;
++		packet->is_haptics = (v20 ? (*av & 0xf) : *av) == 0x02;
+ 		av += 1;
+ 		av_size -= 1;
+ 	}
+@@ -1910,17 +2104,39 @@ static ChiakiErrorCode av_packet_parse(bool v12, ChiakiTakionAVPacket *packet, C
+ 	packet->data = av;
+ 	packet->data_size = av_size;
+ 
++	if(v20_audio_mode == 2)
++	{
++		size_t total = packet->units_in_frame_total;
++		size_t unit_size = total ? av_size / total : 0;
++		if(!total || v20_audio_fec >= total || total - v20_audio_fec > 0xf || v20_audio_fec > 0xf || unit_size > 0xff)
++			return CHIAKI_ERR_INVALID_DATA;
++		packet->units_in_frame_fec = (uint16_t)((unit_size << 8) | (v20_audio_fec << 4) | (total - v20_audio_fec));
++	}
++	else if(v20_audio_mode == 1)
++	{
++		// Multichannel: every packet carries one whole unit (source or FEC) of the frame.
++		if(v20_audio_fec >= packet->units_in_frame_total || packet->unit_index >= packet->units_in_frame_total)
++			return CHIAKI_ERR_INVALID_DATA;
++		packet->audio_single_unit = true;
++		packet->units_in_frame_fec = v20_audio_fec;
++	}
++
+ 	return CHIAKI_ERR_SUCCESS;
+ }
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_v9_av_packet_parse(ChiakiTakionAVPacket *packet, ChiakiKeyState *key_state, uint8_t *buf, size_t buf_size)
+ {
+-	return av_packet_parse(false, packet, key_state, buf, buf_size);
++	return av_packet_parse(false, false, packet, key_state, buf, buf_size);
+ }
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_v12_av_packet_parse(ChiakiTakionAVPacket *packet, ChiakiKeyState *key_state, uint8_t *buf, size_t buf_size)
+ {
+-	return av_packet_parse(true, packet, key_state, buf, buf_size);
++	return av_packet_parse(true, false, packet, key_state, buf, buf_size);
++}
++
++CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_v20_av_packet_parse(ChiakiTakionAVPacket *packet, ChiakiKeyState *key_state, uint8_t *buf, size_t buf_size)
++{
++	return av_packet_parse(true, true, packet, key_state, buf, buf_size);
+ }
+ 
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_v7_av_packet_format_header(uint8_t *buf, size_t buf_size, size_t *header_size_out, ChiakiTakionAVPacket *packet)

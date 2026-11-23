@@ -1,0 +1,206 @@
+Framelift 0112: skip a lost video packet at once when FEC can rebuild it.
+
+Source: the reorder-queue half of P5M patches/0052-protocolo-do-mac-takion-v20-botao-preso-fec-e-psn.patch.
+
+The AV reorder queue waits up to 16 ms for a missing video packet. When the unit indices prove how
+many units of the current frame are gone and the frame's FEC units still cover them, the gap is
+skipped immediately instead of holding every later packet. Timeout and FEC skips are summarized
+in one INFO line every 10 s. Independent of the protocol version.
+
+Ported from P5M (https://github.com/beecrepaldi-afk/P5M), AGPL-3.0, by beecrepaldi-afk,
+which is built on chiaki-ng (https://github.com/streetpea/chiaki-ng) and Chiaki by Florian Märkl.
+Adapted for Framelift against chiaki-ng 43728af2e639fecb8a7af1cd68c29820a40de973 (on top of
+Veyra's 0002 metadata patch and 0100). P5M patches against chiaki-ng 6547d8ae (2026-07-04)
+plus its own series; the pinned commit is 135 upstream commits later. Portuguese comments translated.
+License: AGPL-3.0-only (LicenseRef-AGPL-3.0-only-OpenSSL, like the files it changes).
+
+diff --git a/lib/include/chiaki/takion.h b/lib/include/chiaki/takion.h
+index f2c433e..26411bc 100644
+--- a/lib/include/chiaki/takion.h
++++ b/lib/include/chiaki/takion.h
+@@ -162,6 +162,15 @@ typedef struct chiaki_takion_t
+ 	bool video_queue_initialized;
+ 	int64_t video_queue_head_wait_start_us;
+ 	uint64_t video_queue_head_wait_seq_num;
++	// Video units delivered in the current frame, to judge whether FEC covers a gap (P5M 0052).
++	// Takion thread only.
++	bool fec_frame_valid;
++	ChiakiSeqNum16 fec_frame_index;
++	uint16_t fec_last_unit, fec_units_total, fec_units_fec;
++	uint32_t fec_received;
++	int64_t reorder_window_start_us;
++	unsigned reorder_timeout_skips, reorder_fec_skips;
++	uint64_t reorder_timeout_skip_us;
+ 	ChiakiTakionSendBuffer send_buffer;
+ 	/**
+ 	 * send_buffer only exists from the end of the handshake until the receive loop ends.
+diff --git a/lib/src/takion.c b/lib/src/takion.c
+index 56abad0..c54614d 100644
+--- a/lib/src/takion.c
++++ b/lib/src/takion.c
+@@ -1216,10 +1216,99 @@ static void takion_av_drop(uint64_t seq_num, void *elem_user, void *cb_user)
+  * If the head packet is missing, wait up to TAKION_AV_REORDER_TIMEOUT_US before
+  * skipping it, then retry. This handles WiFi jitter without stalling on lost packets.
+  */
++/*
++ * FEC-aware early skip, ported from P5M patch 0052 (beecrepaldi-afk/P5M, AGPL-3.0).
++ *
++ * The queue normally waits up to TAKION_AV_REORDER_TIMEOUT_US for a missing video packet. When
++ * the unit indices prove how many units of the current frame are gone and the frame's FEC
++ * units can still rebuild them, waiting buys nothing: the frame can be completed now, so the
++ * gap is skipped at once instead of holding every packet behind it for ~16 ms.
++ */
++
++// Units of the current frame not delivered so far: expected up to last_unit minus received.
++// Counts lost source and FEC units alike; timeout skips are included naturally.
++static unsigned takion_fec_frame_erasures(const ChiakiTakion *takion)
++{
++	const unsigned expected = (unsigned)takion->fec_last_unit + 1;
++	return takion->fec_received <= expected ? expected - takion->fec_received : UINT32_MAX;
++}
++
++static void takion_fec_note_delivered(ChiakiTakion *takion, const ChiakiTakionAVPacket *packet)
++{
++	if(!packet->is_video)
++		return;
++	if(!takion->fec_frame_valid || packet->frame_index != takion->fec_frame_index)
++	{
++		takion->fec_frame_valid = true;
++		takion->fec_frame_index = packet->frame_index;
++		takion->fec_received = 0;
++	}
++	takion->fec_last_unit = packet->unit_index;
++	takion->fec_units_total = packet->units_in_frame_total;
++	takion->fec_units_fec = packet->units_in_frame_fec;
++	takion->fec_received++;
++}
++
++// Skip early only if the gap fits in this frame's FEC budget and the unit indices confirm
++// how many packets were really lost.
++static bool takion_fec_covers_gap(ChiakiTakion *takion, ChiakiReorderQueue *queue, uint64_t missing)
++{
++	uint64_t seq_num;
++	void *user;
++	if(!takion->fec_frame_valid || missing == 0 || !chiaki_reorder_queue_peek(queue, missing, &seq_num, &user))
++		return false;
++	const ChiakiTakionAVPacket *next = &((TakionAVPacketEntry *)user)->packet;
++	if(!next->is_video)
++		return false;
++	const unsigned erased = takion_fec_frame_erasures(takion);
++	if(erased == UINT32_MAX)
++		return false;
++	if(next->frame_index == takion->fec_frame_index)
++	{
++		// The gap is inside the current frame.
++		if(next->units_in_frame_total != takion->fec_units_total
++				|| next->units_in_frame_fec != takion->fec_units_fec
++				|| next->unit_index <= takion->fec_last_unit
++				|| (uint64_t)next->unit_index - takion->fec_last_unit - 1 != missing)
++			return false;
++		return (uint64_t)erased + missing <= takion->fec_units_fec;
++	}
++	// The gap spans the tail of the current frame and the head of the next one.
++	if(next->frame_index != (ChiakiSeqNum16)(takion->fec_frame_index + 1))
++		return false;
++	const unsigned source_count = takion->fec_units_total > takion->fec_units_fec
++		? takion->fec_units_total - takion->fec_units_fec : 0;
++	if(takion->fec_received < source_count || erased > takion->fec_units_fec)
++		return false;
++	const unsigned tail = takion->fec_units_total > (unsigned)takion->fec_last_unit + 1
++		? takion->fec_units_total - (unsigned)takion->fec_last_unit - 1 : 0;
++	if((uint64_t)tail + next->unit_index != missing || next->unit_index > next->units_in_frame_fec)
++		return false;
++	return (uint64_t)erased + tail <= takion->fec_units_fec;
++}
++
++// One INFO line every 10 s when the reorder queue had to skip anything.
++static void takion_reorder_log(ChiakiTakion *takion, int64_t now)
++{
++	if(!takion->reorder_window_start_us)
++		takion->reorder_window_start_us = now;
++	if(now - takion->reorder_window_start_us < 10000000)
++		return;
++	if(takion->reorder_timeout_skips || takion->reorder_fec_skips)
++		CHIAKI_LOGI(takion->log, "Takion AV reorder 10s: gave up on a lost packet %u times (%.1f ms held in total), "
++				"skipped at once because FEC fills it %u times",
++				takion->reorder_timeout_skips, takion->reorder_timeout_skip_us / 1000.0, takion->reorder_fec_skips);
++	takion->reorder_timeout_skips = 0;
++	takion->reorder_timeout_skip_us = 0;
++	takion->reorder_fec_skips = 0;
++	takion->reorder_window_start_us = now;
++}
++
+ static void takion_av_queue_flush_with_timeout(ChiakiTakion *takion, ChiakiReorderQueue *queue,
+ 		int64_t *head_wait_start_us, uint64_t *head_wait_seq_num)
+ {
+ 	int64_t now = chiaki_time_now_monotonic_us();
++	takion_reorder_log(takion, now);
+ 	bool made_progress = true;
+ 
+ 	while(made_progress)
+@@ -1231,6 +1320,7 @@ static void takion_av_queue_flush_with_timeout(ChiakiTakion *takion, ChiakiReord
+ 		while(chiaki_reorder_queue_pull(queue, &seq_num, (void **)&entry))
+ 		{
+ 			made_progress = true;
++			takion_fec_note_delivered(takion, &entry->packet);
+ 			if(takion->cb)
+ 			{
+ 				ChiakiTakionEvent event = { 0 };
+@@ -1265,18 +1355,36 @@ static void takion_av_queue_flush_with_timeout(ChiakiTakion *takion, ChiakiReord
+ 			}
+ 		}
+ 
++		uint64_t missing = 0;
++		while(missing < queue->count)
++		{
++			uint64_t seq_num_peek;
++			void *entry_user;
++			if(chiaki_reorder_queue_peek(queue, missing, &seq_num_peek, &entry_user))
++				break;
++			missing++;
++		}
++		const bool fec_covers = missing < queue->count && takion_fec_covers_gap(takion, queue, missing);
++
+ 		// Head slot is missing (packet lost or not yet arrived)
+ 		if(*head_wait_start_us == 0)
+ 		{
+ 			*head_wait_start_us = now;
+ 			*head_wait_seq_num = queue->begin;
+-			break;
++			if(!fec_covers)
++				break;
+ 		}
+-
+-		if(now - *head_wait_start_us <= TAKION_AV_REORDER_TIMEOUT_US)
++		if(!fec_covers && now - *head_wait_start_us <= TAKION_AV_REORDER_TIMEOUT_US)
+ 			break;
+ 
+-		// Timeout exceeded: skip directly to the first buffered packet so startup
++		if(fec_covers)
++			takion->reorder_fec_skips++;
++		else
++		{
++			takion->reorder_timeout_skips++;
++			takion->reorder_timeout_skip_us += (uint64_t)(now - *head_wait_start_us);
++		}
++		// Timeout exceeded (or FEC covers the gap): skip directly to the first buffered packet so startup
+ 		// and burst reordering only pay a single timeout.
+ 		uint64_t skipped = 0;
+ 		while(skipped < queue->count)
+@@ -1343,6 +1451,16 @@ static void *takion_thread_func(void *user)
+ 	takion->video_queue_initialized = false;
+ 	takion->video_queue_head_wait_start_us = 0;
+ 	takion->video_queue_head_wait_seq_num = 0;
++	takion->fec_frame_valid = false;
++	takion->fec_frame_index = 0;
++	takion->fec_last_unit = 0;
++	takion->fec_units_total = 0;
++	takion->fec_units_fec = 0;
++	takion->fec_received = 0;
++	takion->reorder_window_start_us = 0;
++	takion->reorder_timeout_skips = 0;
++	takion->reorder_timeout_skip_us = 0;
++	takion->reorder_fec_skips = 0;
+ 
+ 	uint32_t seq_num_remote_initial;
+ 	if(takion_handshake(takion, &seq_num_remote_initial) != CHIAKI_ERR_SUCCESS)

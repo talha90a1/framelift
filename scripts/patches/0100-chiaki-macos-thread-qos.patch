@@ -1,0 +1,36 @@
+--- a/lib/src/thread.c
++++ b/lib/src/thread.c
+@@ -13,6 +13,10 @@
+ #include <switch.h>
+ #endif
+ 
++#ifdef __APPLE__
++#include <pthread/qos.h>
++#endif
++
+ #if defined(__ANDROID__)
+ struct chiaki_timedjoin_ctx
+ {
+@@ -83,7 +87,22 @@
+ 	if(get_thread_limit() <= 1)
+ 		return CHIAKI_ERR_THREAD;
+ #endif
++#ifdef __APPLE__
++	// Veyra for Mac: every chiaki thread (takion, stream/ctrl, senkusha, feedback, congestion,
++	// audio/haptics) carries real-time input/video work: run it at user-interactive QoS.
++	pthread_attr_t attr;
++	pthread_attr_t *attr_ptr = NULL;
++	if(pthread_attr_init(&attr) == 0)
++	{
++		pthread_attr_set_qos_class_np(&attr, QOS_CLASS_USER_INTERACTIVE, 0);
++		attr_ptr = &attr;
++	}
++	int r = pthread_create(&thread->thread, attr_ptr, func, arg);
++	if(attr_ptr)
++		pthread_attr_destroy(attr_ptr);
++#else
+ 	int r = pthread_create(&thread->thread, NULL, func, arg);
++#endif
+ 	if(r != 0)
+ 		return CHIAKI_ERR_THREAD;
+ #endif

@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// StreamSettings persistence (UserDefaults, JSON) and the PS5 stream presets. Pure Foundation.
+import Foundation
+
+/// The four presets the PS5 offers for Remote Play.
+enum StreamPreset: String, CaseIterable, Identifiable {
+    case p720fps30, p720fps60, p1080fps30, p1080fps60
+
+    var id: String { rawValue }
+    var width: UInt32 { is1080 ? 1920 : 1280 }
+    var height: UInt32 { is1080 ? 1080 : 720 }
+    var fps: UInt32 { self == .p720fps30 || self == .p1080fps30 ? 30 : 60 }
+    var title: String { "\(height)p · \(fps) fps" }
+
+    private var is1080: Bool { self == .p1080fps30 || self == .p1080fps60 }
+
+    init?(settings: StreamSettings) {
+        guard let match = Self.allCases.first(where: {
+            $0.width == settings.width && $0.height == settings.height && $0.fps == settings.streamFPS
+        }) else { return nil }
+        self = match
+    }
+
+    func apply(to settings: inout StreamSettings) {
+        settings.width = width
+        settings.height = height
+        settings.streamFPS = fps
+    }
+}
+
+enum StreamSettingsLimits {
+    static let bitrateRangeKbps: ClosedRange<UInt32> = 2000...50000
+}
+
+/// Loads and saves `StreamSettings` as JSON in UserDefaults. Unknown or corrupt data falls back to defaults.
+struct SettingsStore {
+    static let key = "framelift.streamSettings.v1"
+    let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func load() -> StreamSettings {
+        guard let data = defaults.data(forKey: Self.key),
+              let decoded = try? JSONDecoder().decode(StreamSettings.self, from: data)
+        else { return StreamSettings() }
+        return Self.sanitized(decoded)
+    }
+
+    func save(_ settings: StreamSettings) {
+        guard let data = try? JSONEncoder().encode(Self.sanitized(settings)) else { return }
+        defaults.set(data, forKey: Self.key)
+    }
+
+
+    /// Clamps stored values to what the app offers: a PS5 preset, 8-bit H.264/HEVC, and a frame-generation backend.
+    static func sanitized(_ settings: StreamSettings) -> StreamSettings {
+        var result = settings
+        if StreamPreset(settings: result) == nil { StreamPreset.p1080fps30.apply(to: &result) }
+        if result.codec == .hevcHDR { result.codec = .hevc }
+        let range = StreamSettingsLimits.bitrateRangeKbps
+        result.bitrateKbps = min(max(result.bitrateKbps, range.lowerBound), range.upperBound)
+        return result
+    }
+
+    /// The target display if it is still connected (a TV may have been unplugged), else nil = main window's screen.
+    static func resolvedDisplayID(_ requested: UInt32?, available: [UInt32]) -> UInt32? {
+        guard let requested, available.contains(requested) else { return nil }
+        return requested
+    }
+}
