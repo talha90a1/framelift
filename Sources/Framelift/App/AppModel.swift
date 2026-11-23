@@ -197,6 +197,6 @@ final class AppModel: ObservableObject {
     }
 
     private func reportMissingCredentials(_ console: PairedConsole) {
-        errorAlert = .init(title: "Pairing data missing", message: "The keys for \(console.nickname) aren't in the Keychain. Remove the console and pair it again.")
+        errorAlert = .init(title: "Pairing data missing", message: "The keys for \(console.nickname) are missing on this Mac. Remove the console and pair it again.")
     }
 }

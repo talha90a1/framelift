@@ -3,7 +3,7 @@
 import Foundation
 import SystemConfiguration
 
-/// What to scrub, captured on the main thread at export time. Never holds Keychain data.
+/// What to scrub, captured on the main thread at export time. Never holds pairing keys.
 struct RedactionContext: Sendable {
     struct Console: Sendable {
         var nickname: String

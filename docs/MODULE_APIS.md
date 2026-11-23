@@ -11,14 +11,14 @@ struct PairedConsole: Codable, Identifiable, Hashable { var id: String /*console
 struct DiscoveredConsole: Identifiable, Hashable { var id: String; var address: String; var name: String; var isPS5: Bool; var standby: Bool }
 enum SessionEvent { case connected, loginPinRequired, quit(reason: Int32, message: String), failed(code: Int32, message: String) }
 
-final class ConsoleStore: ObservableObject {           // Keychain for secrets, UserDefaults for list
+final class ConsoleStore: ObservableObject {           // owner-only files for keys, UserDefaults for list
     static let shared: ConsoleStore
     @Published private(set) var consoles: [PairedConsole]
     func credentials(for consoleID: String) -> ConsoleCredentials?
     func save(_ console: PairedConsole, credentials: ConsoleCredentials) throws
     func update(_ console: PairedConsole)
     func remove(_ consoleID: String)
-    var psnAccountIDBase64: String? { get set }        // remembered PSN account id (not secret, but stored in Keychain anyway)
+    var psnAccountIDBase64: String? { get set }        // remembered PSN account id (UserDefaults)
 }
 enum PSNAccount { static func decode(base64OrDecimal: String) -> Data? }   // 8 bytes
 enum ConsolePairing { static func pair(host: String, accountID: Data, pin: String) async throws -> (PairedConsole, ConsoleCredentials) }

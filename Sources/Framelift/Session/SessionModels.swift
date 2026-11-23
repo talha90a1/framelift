@@ -2,7 +2,7 @@
 // Value types shared by pairing, discovery, the console store and the remote-play session.
 import Foundation
 
-/// Registration secrets for one console. Kept in the Keychain only; never logged or printed.
+/// Registration secrets for one console. Stored in an owner-only file; never logged or printed.
 struct ConsoleCredentials: CustomStringConvertible, CustomDebugStringConvertible {
     /// PSN account id, 8 bytes (little endian, as chiaki expects).
     var accountID: Data
