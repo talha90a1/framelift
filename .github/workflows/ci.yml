@@ -1,6 +1,5 @@
 name: CI
 
-# Docs-only changes (README, docs/, licenses, templates) don't need a Mac build.
 on:
   push:
     branches: [main]
@@ -15,15 +14,6 @@ on:
       - ".editorconfig"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "licenses/**"
-      - "LICENSE"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/pull_request_template.md"
-      - ".github/RELEASE_NOTES.md"
-      - ".editorconfig"
 
 permissions:
   contents: read
@@ -34,13 +24,20 @@ concurrency:
 
 jobs:
   build-and-test:
-    # Developed and tested with Xcode and the macOS 27 SDK on Apple Silicon. If GitHub's macos-latest
-    # image has an older SDK and the build fails for that reason, switch runs-on to a newer image or a
-    # self-hosted runner that has it (see CONTRIBUTING.md).
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check public history
+        run: |
+          if [ -n "$(git log --full-history --format=%h HEAD -- ':(icase,glob)**/agents.md' ':(icase,glob)**/claude.md')" ]; then
+            echo "::error::Private instruction file in commit history"
+            exit 1
+          fi
 
       - name: Select the newest Xcode
         run: |
@@ -56,7 +53,7 @@ jobs:
 
       - name: Restore libchiaki build
         id: chiaki-cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/chiaki-dist
           key: chiaki-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build_chiaki.sh', 'scripts/patches/**') }}
@@ -77,13 +74,17 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: swift-format lint (changed files)
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          FILES=$(git diff --name-only --diff-filter=AM "origin/${{ github.base_ref }}...HEAD" -- '*.swift')
+          set -o pipefail
+          FILES=$(git diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- '*.swift')
           if [ -z "$FILES" ]; then echo "No Swift files changed."; exit 0; fi
-          echo "$FILES" | xargs xcrun swift-format lint --configuration .swift-format 2>&1 \
-            | sed -E 's#^([^:]+):([0-9]+):([0-9]+): warning: (.*)#::warning file=\1,line=\2,col=\3::\4#' || true
+          printf '%s\n' "$FILES" | xargs -I '{}' xcrun swift-format lint --configuration .swift-format '{}' 2>&1 \
+            | sed -E 's#^([^:]+):([0-9]+):([0-9]+): warning: (.*)#::warning file=\1,line=\2,col=\3::\4#'

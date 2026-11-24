@@ -1,22 +1,13 @@
-Apple Silicon build (M1 or newer). macOS 27 is needed for 1080p frame generation.
-
 ## Install
 
-1. Download `Framelift-<version>-macOS-arm64.zip` below and unzip it.
-2. Move `Framelift.app` to Applications and open it.
-3. The app is not notarized, so macOS blocks the first launch. Open **System Settings › Privacy & Security**, scroll down, click **Open Anyway** next to Framelift, and confirm.
+Apple Silicon (M1 or newer). macOS 26 or later. Use macOS 27 for 1080p frame generation.
 
-You only do this once per version. To check the download, compare its SHA-256 with the `.sha256` file, or verify that GitHub built it from this repository:
+1. Download the macOS ARM64 ZIP, unzip it, and move Framelift.app to Applications.
+2. Open Framelift. On first launch, approve it under **System Settings › Privacy & Security › Open Anyway**. The app is ad hoc signed and unnotarized.
+3. Turn on **Settings › System › Remote Play** on the PS5. Pair it with Framelift on the same network.
 
-```bash
-shasum -a 256 Framelift-*-macOS-arm64.zip
-```
+## Verify or build from source
 
-```bash
-gh attestation verify Framelift-*-macOS-arm64.zip --repo talha90a1/framelift
-```
+Run `shasum -a 256 -c Framelift-*-macOS-arm64.zip.sha256` with the ZIP and checksum in the same directory. For GitHub build provenance, run `gh attestation verify Framelift-*-macOS-arm64.zip --repo talha90a1/framelift`.
 
-## Notes
-
-- Works on your local network. For the best experience, connect the PS5 to your Mac with an Ethernet cable and share your Mac's internet to it (see Best setup in the README). Pair the PS5 under Settings › System › Remote Play › Pair Device.
-- Found a problem? Turn on Settings › Debug › Debug logs, reproduce it, then use Export Logs… and attach the zip to a bug report.
+The `Framelift-*-source.tar.gz` asset contains this release’s source, dependency sources, patch files, and build instructions. See `CONTRIBUTING.md` inside the archive.
