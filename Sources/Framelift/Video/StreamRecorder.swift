@@ -29,23 +29,35 @@ final class StreamRecorder: @unchecked Sendable {
             let url = dir.appendingPathComponent(unit.codec == .hevc ? "stream.h265" : "stream.h264")
             let tURL = dir.appendingPathComponent("stream.times.csv")
             FileManager.default.createFile(atPath: url.path, contents: nil)
-            FileManager.default.createFile(atPath: tURL.path, contents: Data("arrival_ms,bytes\n".utf8))
+            FileManager.default.createFile(atPath: tURL.path, contents: nil)
             file = try? FileHandle(forWritingTo: url)
             times = try? FileHandle(forWritingTo: tURL)
-            times?.seekToEndOfFile()
+            guard file != nil, times != nil else {
+                stop("couldn't open the recording files")
+                return
+            }
+            do {
+                try times?.write(contentsOf: Data("arrival_ms,bytes\n".utf8))
+            } catch {
+                stop(error.localizedDescription)
+                return
+            }
             started = unit.arrivalHostTime
             bytes = 0
             Diagnostics.shared.event("stream recording to \(url.lastPathComponent)")
         }
         guard let file else { return }
-        file.write(unit.data)
-        bytes += unit.data.count
         let ms = HostClock.milliseconds(from: started, to: unit.arrivalHostTime)
-        times?.write(Data(String(format: "%.2f,%d\n", ms, unit.data.count).utf8))
-        if ms / 1000 > Self.maxSeconds || bytes > Self.maxBytes {
-            Diagnostics.shared.event(String(format: "stream recording done: %.0f s, %d MB", ms / 1000, bytes >> 20))
-            close()
-            done = true
+        guard ms / 1000 <= Self.maxSeconds, unit.data.count <= Self.maxBytes - bytes else {
+            stop(String(format: "reached the limit at %.0f s, %d MB", ms / 1000, bytes >> 20))
+            return
+        }
+        do {
+            try file.write(contentsOf: unit.data)
+            try times?.write(contentsOf: Data(String(format: "%.2f,%d\n", ms, unit.data.count).utf8))
+            bytes += unit.data.count
+        } catch {
+            stop(error.localizedDescription)
         }
     }
 
@@ -66,5 +78,11 @@ final class StreamRecorder: @unchecked Sendable {
     private func close() {
         try? file?.close(); try? times?.close()
         file = nil; times = nil
+    }
+
+    private func stop(_ reason: String) {
+        Diagnostics.shared.event("stream recording stopped: \(reason)")
+        close()
+        done = true
     }
 }

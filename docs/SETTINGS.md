@@ -16,7 +16,7 @@ Open Settings with ⌘,. The defaults are the recommended values.
 - **Updates:** Check for updates when Framelift opens (on). Framelift asks GitHub once for the latest release; nothing about you or your PS5 is sent and nothing is downloaded. When a newer version is out, a bar in the main window links to its release page. Check Now, or Framelift › Check for Updates…, checks by hand.
 - **Debug:**
   - Show performance overlay (⇧⌘O): live timings in the stream window.
-  - Debug logs (off by default): writes a log folder per stream (`events.log` and per-frame timings in `frames.csv`) to `~/Library/Logs/Framelift/`. It takes effect from the next stream.
+  - Debug logs (off by default): writes event logs, frame timings, and up to five minutes of video to `~/Library/Logs/Framelift/`. It takes effect from the next stream. Export Logs… includes the text logs and timings only.
   - Latency probe (⇧⌘L): available while streaming with Debug logs on. Press Options on the controller and the overlay reports the button-to-screen time.
   - Export Logs… and Show Logs in Finder: shown when Debug logs is on. Export Logs… writes a zip of the debug logs, with personal data removed, for a bug report.
 

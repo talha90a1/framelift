@@ -8,7 +8,7 @@ struct SettingsView: View {
     @EnvironmentObject private var updates: UpdateChecker
     @AppStorage(UpdateChecks.defaultsKey) private var checkForUpdates = true
     @AppStorage(TouchpadMode.defaultsKey) private var touchpad: TouchpadMode = .clickOnly
-    @AppStorage(DebugLogs.defaultsKey) private var debugLogs = true
+    @AppStorage(DebugLogs.defaultsKey) private var debugLogs = DebugLogs.enabledByDefault
     @AppStorage(DisplayBuffering.defaultsKey) private var buffering: DisplayBuffering = .triple
     @State private var hasSessionLogs = false
 
@@ -119,7 +119,7 @@ struct SettingsView: View {
                     model.settings = StreamSettings()
                     touchpad = .clickOnly
                     buffering = .triple
-                    debugLogs = false
+                    debugLogs = DebugLogs.enabledByDefault
                     checkForUpdates = true
                 }
             }
