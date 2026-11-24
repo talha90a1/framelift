@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.2 - 2026-11-24
 
 ### Added
 
@@ -10,15 +10,19 @@
 - Apple MetalFX upscaling.
 - Press a button to select the controller when several are connected.
 - In-app DualSense pairing, disconnect, and unpair, with an animated button guide.
+- Separate stream video recording and a Delete Logs button.
+
+Install this version from GitHub to enable in-app updates for future releases.
 
 ### Fixed
 
 - Framelift stays open if the connection breaks during a write.
-- Fixed a VideoToolbox crash when leaving a stream during frame generation.
-- Fixed a crash on Connect when the packaged app loaded its shaders.
+- Prevented a VideoToolbox crash when leaving a stream during frame generation.
+- Prevented a crash on Connect when the packaged app loaded its shaders.
 - Fullscreen opens once the first PS5 video frame arrives.
 - Native 60 fps streams stay at 60 fps on 120 Hz displays.
 - HDR recordings use the HEVC format.
+- Turned off frame blending and the HUD guard by default to reduce ghosting in motion.
 
 ### Removed
 

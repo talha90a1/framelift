@@ -7,7 +7,7 @@ import os
 /// The "Debug logs" setting (Settings > Debug), read when a stream starts.
 enum DebugLogs {
     static let defaultsKey = "framelift.debugLogs.v1"
-    static let enabledByDefault = true
+    static let enabledByDefault = false
 
     static func stored(_ defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: defaultsKey) as? Bool ?? enabledByDefault
