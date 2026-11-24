@@ -6,9 +6,11 @@ SO_NET_SERVICE_TYPE hunk of patches/0052-protocolo-do-mac-takion-v20-botao-preso
 
 - SO_NET_SERVICE_TYPE = NET_SERVICE_TYPE_VI (macOS interactive video / Wi-Fi video access category).
 - DSCP AF41 via IP_TOS (IPv4) or IPV6_TCLASS (IPv6), family read from the socket.
-- SO_RCVBUF 1 MB (chiaki asked for a_rwnd, 100 KB); a_rwnd itself is unchanged.
+- SO_RCVBUF 4 MiB, 1 MB if refused (chiaki asked for a_rwnd, 100 KB); a_rwnd itself is unchanged.
 - Dropped: SO_PRIORITY (Linux/Android only) and P5M's WARNING-level success logs (Android logcat).
 Every option is a request; a refusal is logged and never fails the connection.
+The 4 MiB first try follows PushFPS (https://github.com/DosukaSOL/PushFPS, GPL-3.0-or-later),
+scripts/remoteplay/patches/0005-chiaki-socket-receive-buffer.patch.
 
 Ported from P5M (https://github.com/beecrepaldi-afk/P5M), AGPL-3.0, by beecrepaldi-afk,
 which is built on chiaki-ng (https://github.com/streetpea/chiaki-ng) and Chiaki by Florian Märkl.
@@ -21,7 +23,7 @@ diff --git a/lib/src/takion.c b/lib/src/takion.c
 index 9916009..0233f0f 100644
 --- a/lib/src/takion.c
 +++ b/lib/src/takion.c
-@@ -438,12 +438,78 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
+@@ -438,12 +438,88 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
  		{
  			ret = err;
  			goto error_sock;
@@ -78,12 +80,22 @@ index 9916009..0233f0f 100644
 +		// 100 KB at 25 Mbps is only 32 ms. A 1080p keyframe easily passes 200 KB and arrives in
 +		// one burst; if the reading thread is off the CPU for a moment, the kernel drops the
 +		// excess silently. That closes a loop P5M saw in its logs: FEC failure -> IDR request ->
-+		// big keyframe burst -> buffer overflow -> FEC failure. 1 MB gives ~320 ms of headroom.
++		// big keyframe burst -> buffer overflow -> FEC failure. Ask for 4 MiB, as PushFPS does
++		// (DosukaSOL/PushFPS patch 0005): ~330 ms of headroom at 100 Mbps; 1 MB if refused.
 +		// The kernel may grant less, so the granted size is read back and logged.
-+		const int rcvbuf_wanted = 1024 * 1024;
-+		if(setsockopt(takion->sock, SOL_SOCKET, SO_RCVBUF,
-+				(const CHIAKI_SOCKET_BUF_TYPE)&rcvbuf_wanted, sizeof(rcvbuf_wanted)) < 0)
-+			CHIAKI_LOGW(takion->log, "Takion: 1 MB SO_RCVBUF refused; carrying on with %d B", (int)takion->a_rwnd);
++		const int rcvbuf_sizes[] = { 4 * 1024 * 1024, 1024 * 1024 };
++		int rcvbuf_wanted = 0;
++		for(size_t i = 0; i < sizeof(rcvbuf_sizes) / sizeof(rcvbuf_sizes[0]); i++)
++		{
++			if(setsockopt(takion->sock, SOL_SOCKET, SO_RCVBUF,
++					(const CHIAKI_SOCKET_BUF_TYPE)&rcvbuf_sizes[i], sizeof(rcvbuf_sizes[i])) == 0)
++			{
++				rcvbuf_wanted = rcvbuf_sizes[i];
++				break;
++			}
++		}
++		if(!rcvbuf_wanted)
++			CHIAKI_LOGW(takion->log, "Takion: larger SO_RCVBUF refused; carrying on with %d B", (int)takion->a_rwnd);
 +		else
 +		{
 +			int granted = 0;

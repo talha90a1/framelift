@@ -33,9 +33,13 @@ struct FrameliftApp: App {
                 .environmentObject(model.consoles)
                 .environmentObject(model.coordinator)
                 .environmentObject(model.input)
+                .environmentObject(model.updates)
         }
         .defaultSize(width: 620, height: 460)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { model.updates.checkNow() }
+            }
             CommandMenu("Stream") {
                 Button("Leave Stream") { model.coordinator.stop() }
                     .keyboardShortcut("q", modifiers: [.command, .shift])
@@ -63,6 +67,7 @@ struct FrameliftApp: App {
         Settings {
             SettingsView()
                 .environmentObject(model)
+                .environmentObject(model.updates)
         }
     }
 }
