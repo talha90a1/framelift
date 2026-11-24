@@ -6,6 +6,7 @@ struct ConsoleListView: View {
     @EnvironmentObject private var store: ConsoleStore
     @EnvironmentObject private var coordinator: StreamCoordinator
     @EnvironmentObject private var updates: UpdateChecker
+    @EnvironmentObject private var input: InputManager
     @State private var pairing: PairRequest?
     @State private var removing: PairedConsole?
     @State private var showCableSetup = false
@@ -14,6 +15,11 @@ struct ConsoleListView: View {
     var body: some View {
         VStack(spacing: 0) {
             List {
+                if let status = input.controllerStatus {
+                    Section("Controller") {
+                        ControllerSetupView(status: status, didUnpair: input.didUnpairDualSense)
+                    }
+                }
                 Section("My consoles") {
                     if store.consoles.isEmpty {
                         Text("Turn on your PS5, then click Pair Console.")
@@ -231,7 +237,6 @@ private struct PairedConsoleRow: View {
 private struct StatusBar: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var coordinator: StreamCoordinator
-    @EnvironmentObject private var input: InputManager
 
     var body: some View {
         HStack(spacing: 16) {
@@ -239,7 +244,6 @@ private struct StatusBar: View {
                 ProgressView().controlSize(.small)
                 Text(message)
             } else {
-                Label(input.controllerName ?? "No controller", systemImage: "gamecontroller")
                 Label(model.targetDisplayLabel, systemImage: "display")
                 Label(presetText, systemImage: "film")
             }

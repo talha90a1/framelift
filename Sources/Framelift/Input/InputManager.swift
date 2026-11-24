@@ -5,7 +5,8 @@ import Foundation
 import GameController
 
 final class InputManager: ObservableObject, @unchecked Sendable {
-    @Published private(set) var controllerName: String?
+    @Published private(set) var controllerStatus: ControllerStatus?
+    var controllerName: String? { controllerStatus?.connected?.name }
 
     var sink: ControllerSink? {
         get { sinkLock.lock(); defer { sinkLock.unlock() }; return _sink }
@@ -108,6 +109,7 @@ final class InputManager: ObservableObject, @unchecked Sendable {
             watchedControllers.removeAll()
             controllerConfirmed = false
             detachController(clearFeedback: true, closeWait: 0.1)
+            publishController(nil)
             lastTriggers = nil
             triggerFilter.reset()
             send(ControllerSnapshot(), force: true)  // leave the PS5 with a neutral pad
@@ -117,12 +119,44 @@ final class InputManager: ObservableObject, @unchecked Sendable {
 
     // MARK: Controller selection
 
+    private func kind(of controller: GCController) -> ControllerIdentity.Kind {
+        guard let gamepad = controller.extendedGamepad else { return .other }
+        return switch gamepad {
+        case is GCDualSenseGamepad: .dualSense
+        case is GCDualShockGamepad: .dualShock
+        case is GCXboxGamepad: .xbox
+        default: .other
+        }
+    }
+
     private func rank(_ c: GCController) -> Int {
-        guard let pad = c.extendedGamepad else { return 0 }
-        if pad is GCDualSenseGamepad { return 4 }
-        if pad is GCDualShockGamepad { return 3 }
-        if pad is GCXboxGamepad { return 2 }
-        return 1
+        switch kind(of: c) {
+        case .dualSense: 4
+        case .dualShock: 3
+        case .xbox: 2
+        case .other: 1
+        }
+    }
+
+    @MainActor
+    func didUnpairDualSense(_ device: PairedDualSense, remaining: [PairedDualSense]) {
+        guard var status = controllerStatus, let last = status.lastConnected,
+            last.kind == .dualSense, last.name.caseInsensitiveCompare(device.name) == .orderedSame,
+            !remaining.contains(where: { $0.name.caseInsensitiveCompare(device.name) == .orderedSame })
+        else { return }
+
+        ControllerIdentity.clear()
+        status.lastConnected = nil
+        controllerStatus = status
+    }
+
+    private func publishController(_ connected: ControllerIdentity?) {
+        DispatchQueue.main.async {
+            let last = self.controllerStatus?.lastConnected ?? ControllerIdentity.stored()
+            if let connected, connected != last { connected.save() }
+            let status = ControllerStatus(connected: connected, lastConnected: connected ?? last)
+            if self.controllerStatus != status { self.controllerStatus = status }
+        }
     }
 
     private func refreshControllers(excluding disconnected: GCController? = nil) {
@@ -145,6 +179,10 @@ final class InputManager: ObservableObject, @unchecked Sendable {
             }
         }
         watchedControllers = watching
+        if connected.isEmpty {
+            publishController(nil)
+            return
+        }
         guard !controllerConfirmed, let best = connected.max(by: { rank($0) < rank($1) }),
             best !== controller
         else { return }
@@ -202,7 +240,8 @@ final class InputManager: ObservableObject, @unchecked Sendable {
         hapticLevel = (0, 0)
         sendIfChanged()
         hidTriggersFailed = false
-        let isDualSense = c.extendedGamepad is GCDualSenseGamepad
+        let kind = kind(of: c)
+        let isDualSense = kind == .dualSense
         attachedFeedbackMode = DualSenseFeedbackMode.stored()
         if isDualSense, attachedFeedbackMode == .exact {
             openDualSense()
@@ -210,10 +249,7 @@ final class InputManager: ObservableObject, @unchecked Sendable {
             useCompatibleFeedback(reason: isDualSense ? "setting" : nil)
         }
         applyLastTriggers(force: true)  // controller reconnected mid-session
-        let name = c.vendorName ?? c.productCategory
-        DispatchQueue.main.async {
-            self.controllerName = name
-        }
+        publishController(ControllerIdentity(name: c.vendorName ?? c.productCategory, kind: kind))
     }
 
     private func detachController(clearFeedback: Bool, closeWait: TimeInterval = 0) {
@@ -232,9 +268,6 @@ final class InputManager: ObservableObject, @unchecked Sendable {
         controller = nil
         touchSlots = [TouchSlot(), TouchSlot()]
         triggerFilter.reset()
-        DispatchQueue.main.async {
-            self.controllerName = nil
-        }
     }
 
     // MARK: Snapshot building

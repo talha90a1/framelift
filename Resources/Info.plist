@@ -32,6 +32,8 @@
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>While you sign in to PlayStation, Framelift reads the address of your browser's current tab to finish signing in automatically. Nothing else is read.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Framelift uses Bluetooth to find and pair your DualSense controller.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>

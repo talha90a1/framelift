@@ -43,7 +43,7 @@ let package = Package(
             name: "Framelift",
             dependencies: ["VeyraCore"],
             path: "Sources/Framelift",
-            resources: [.copy("Render/Shaders")],
+            resources: [.copy("Render/Shaders"), .copy("App/DualSensePairing.usdz")],
             swiftSettings: [.swiftLanguageMode(.v5)],
             linkerSettings: [
                 .linkedFramework("VideoToolbox"),
@@ -51,6 +51,7 @@ let package = Package(
                 .linkedFramework("Metal"),
                 .linkedFramework("QuartzCore"),
                 .linkedFramework("GameController"),
+                .linkedFramework("IOBluetooth"),
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreHaptics"),
             ]

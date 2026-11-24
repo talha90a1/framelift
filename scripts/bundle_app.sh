@@ -35,6 +35,7 @@ cp -R licenses "$APP/Contents/Resources/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 cp -R Sources/Framelift/Render/Shaders "$APP/Contents/Resources/"
+cp Sources/Framelift/App/DualSensePairing.usdz "$APP/Contents/Resources/"
 
 # chiaki and its deps are static archives; flag any dylib outside the OS that the app would need at runtime.
 NON_SYSTEM_LIBS=$(otool -L "$APP/Contents/MacOS/Framelift" | awk 'NR>1 {print $1}' | grep -vE '^(/System/|/usr/lib/|@rpath/libswift)' || true)
