@@ -128,10 +128,13 @@ final class StreamCoordinator: ObservableObject {
         settings.keepStaticOverlays = newSettings.keepStaticOverlays
         settings.blendFallback = newSettings.blendFallback
         settings.sharpness = newSettings.sharpness
+        settings.upscaler = newSettings.upscaler
         engine?.update(settings: settings)
         window?.overlayVisible = newSettings.showOverlay
         engine?.showFPSCounter = newSettings.showOverlay
-        Diagnostics.shared.event("live settings sceneCutFallback=\(settings.sceneCutFallback) keepStatic=\(settings.keepStaticOverlays) blendFallback=\(settings.blendFallback) sharpness=\(settings.sharpness)")
+        Diagnostics.shared.event(
+            "live settings sceneCutFallback=\(settings.sceneCutFallback) keepStatic=\(settings.keepStaticOverlays) blendFallback=\(settings.blendFallback) sharpness=\(settings.sharpness) upscaler=\(settings.upscaler.rawValue)"
+        )
     }
 
     // MARK: Pipeline

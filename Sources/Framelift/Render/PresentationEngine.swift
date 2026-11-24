@@ -11,7 +11,6 @@ import os
 final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable {
     // MARK: Public knobs (not in the frozen StreamSettings; wire from the app)
 
-
     /// In-frame FPS/latency HUD (drawn in the Metal pass).
     var showFPSCounter: Bool {
         get { modeLock.withLock { _showFPS } }
@@ -106,6 +105,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             self.pacer.reset()
             self.rebuildBackends()
             self.view.sharpness = Float(settings.sharpness)
+            self.view.upscaler = settings.upscaler
         }
         Diagnostics.shared.event("render: frame generation Apple ML interpolation")
     }
@@ -117,6 +117,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             let old = self.settings
             self.settings = new
             self.view.sharpness = Float(new.sharpness)
+            self.view.upscaler = new.upscaler
             if old.width != new.width || old.height != new.height {
                 self.rebuildBackends()
             }
@@ -162,11 +163,13 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         pacer.reset()
     }
 
-    /// Display gate: 2 x displayHz >= 3 x sourceFPS (a 60 fps source of unique frames on a
-    /// 60 Hz screen is shown frame for frame: noGeneration60).
     private func displayAllowsGeneration() -> Bool {
+        if effectiveFPS >= 50 {
+            setGate("real frames (noGeneration60: 60 fps source)")
+            return false
+        }
         if 2 * displayHz < 3 * effectiveFPS - 0.5 {
-            setGate(effectiveFPS >= 50 ? "real frames (noGeneration60: 60 fps source)" : "real frames (display too slow)")
+            setGate("real frames (display too slow)")
             return false
         }
         return true
@@ -181,15 +184,19 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
 
     /// Watchdog transitions: log them, and on a resume forget everything learned while the glass
     /// was not being reached (present lag, drains).
-    private func handleWatchdog(_ t: PresentationWatchdog.Transition?, target: Double? = nil,
-                                refresh: Double = 0, drawable: CAMetalDrawable? = nil) {
+    private func handleWatchdog(
+        _ t: PresentationWatchdog.Transition?, target: Double? = nil,
+        refresh: Double = 0, drawable: CAMetalDrawable? = nil
+    ) {
         guard let t else { return }
         switch t {
         case .paused:
             Diagnostics.shared.event("render: presentation paused (\(view.visibilitySummary))")
         case let .stalled(committed, duration):
-            Diagnostics.shared.event(String(format: "render: presentation stalled (%d presents committed, none on the glass for %.0f ms; %@)",
-                                            committed, duration * 1000, view.visibilitySummary))
+            Diagnostics.shared.event(
+                String(
+                    format: "render: presentation stalled (%d presents committed, none on the glass for %.0f ms; %@)",
+                    committed, duration * 1000, view.visibilitySummary))
             // Start the pacer over and put the newest real frame up at once (it goes through
             // the same layer, so it shows only if the window server takes presents again).
             epoch += 1
@@ -198,8 +205,9 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             pacer.reset()
             records.removeAll()
             if let frame = previous, let target {
-                present(frame.pixelBuffer, generated: false, first: false, frame: frame, drawable: drawable,
-                        target: target, refresh: refresh)
+                present(
+                    frame.pixelBuffer, generated: false, first: false, frame: frame, drawable: drawable,
+                    target: target, refresh: refresh)
             }
         case let .resumed(reason):
             Diagnostics.shared.event("render: presentation resumed (\(reason))")
@@ -252,18 +260,20 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         previous = frame
         records[id] = Record(frame: frame)
 
-        // Until Apple's model is ready, real frames are paced as if generation were off.
-        let ready = llfi?.isReady(for: frame.pixelBuffer) == true
-        if !ready {
+        let supportsInterpolation = frame.colourTags.hdrCurve == nil && PixelFormats.is8Bit420(frame.pixelBuffer)
+        let eligible = supportsInterpolation && displayAllowsGeneration()
+        let generating = eligible && llfi?.isReady(for: frame.pixelBuffer) == true
+        if !supportsInterpolation {
+            setGate("real frames (Apple ML takes 8-bit SDR only)")
+        } else if eligible && !generating {
             setGate(llfi == nil ? "none (Apple ML unavailable)" : "none (Apple ML loading)")
             llfi?.prepare(width: CVPixelBufferGetWidth(frame.pixelBuffer), height: CVPixelBufferGetHeight(frame.pixelBuffer))
         }
-        let generating = ready && displayAllowsGeneration()
         pacer.generatesFrames = generating
         var interp: AppleLLFIInterpolator?
-        if generating, let prev, !frame.discontinuity,
-           CVPixelBufferGetWidth(prev.pixelBuffer) == CVPixelBufferGetWidth(frame.pixelBuffer),
-           CVPixelBufferGetHeight(prev.pixelBuffer) == CVPixelBufferGetHeight(frame.pixelBuffer), let llfi {
+        if generating, let prev, !frame.discontinuity, prev.colourTags == frame.colourTags,
+            let llfi, llfi.isReady(for: prev.pixelBuffer)
+        {
             setGate(llfi.backendName)
             interp = llfi
         }
@@ -271,7 +281,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         let decoded = HostClock.seconds(frame.decodedHostTime > 0 ? frame.decodedHostTime : HostClock.now())
         pacer.frameArrived(id: id, decodedTime: decoded, generated: n)
         if generating && interp == nil && prev != nil {
-            pacer.noteFallback()   // discontinuity / size change / no backend: B repeats
+            pacer.noteFallback()  // discontinuity / size change / no backend: B repeats
             Diagnostics.shared.setBackend(Source.repeatReal.rawValue, discontinuity: frame.discontinuity, sequence: frame.sequence)
         }
         if let interp, let prev {
@@ -365,8 +375,9 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     private func latchHeld() {
         guard let h = held, wait == nil, CACurrentMediaTime() < h.deadline else { return }
         held = nil
-        handle(pacer.tick(target: h.target, refresh: h.refresh, deadline: h.deadline, recheck: true),
-               target: h.target, refresh: h.refresh, deadline: h.deadline, drawable: h.drawable)
+        handle(
+            pacer.tick(target: h.target, refresh: h.refresh, deadline: h.deadline, recheck: true),
+            target: h.target, refresh: h.refresh, deadline: h.deadline, drawable: h.drawable)
     }
 
     private func prune() {
@@ -392,16 +403,19 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             handleWatchdog(stall, target: tick.targetTime, refresh: tick.refresh, drawable: tick.drawable)
             return pushTelemetry(now: now, refresh: tick.refresh)
         }
-        handle(pacer.tick(target: tick.targetTime, refresh: tick.refresh, deadline: deadline),
-               target: tick.targetTime, refresh: tick.refresh, deadline: deadline, drawable: tick.drawable)
+        handle(
+            pacer.tick(target: tick.targetTime, refresh: tick.refresh, deadline: deadline),
+            target: tick.targetTime, refresh: tick.refresh, deadline: deadline, drawable: tick.drawable)
         pushTelemetry(now: CACurrentMediaTime(), refresh: tick.refresh)
     }
 
     func presenterScreenChanged(_ view: MetalPresenterView, display: DisplayInfo?) {
         let hz = display?.refreshHz ?? 60
         let kind = view.linkKind
-        Diagnostics.shared.event(String(format: "render: display %@ (%u) %.2f Hz builtIn=%d link=%@",
-                                        display?.name ?? "none", display?.id ?? 0, hz, display?.isBuiltIn == true ? 1 : 0, kind))
+        Diagnostics.shared.event(
+            String(
+                format: "render: display %@ (%u) %.2f Hz builtIn=%d link=%@",
+                display?.name ?? "none", display?.id ?? 0, hz, display?.isBuiltIn == true ? 1 : 0, kind))
         perform {
             self.displayHz = hz
             self.cancelWait()
@@ -465,13 +479,15 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     }
 
     /// `first`: the pair's first generated frame (its glass time is the frames.csv mid column).
-    private func present(_ buffer: CVPixelBuffer, generated: Bool, first: Bool, frame: DecodedFrame,
-                         drawable: CAMetalDrawable?, target: Double, refresh: Double) {
+    private func present(
+        _ buffer: CVPixelBuffer, generated: Bool, first: Bool, frame: DecodedFrame,
+        drawable: CAMetalDrawable?, target: Double, refresh: Double
+    ) {
         let stats = self.stats
         let arrival = HostClock.seconds(frame.arrivalHostTime)
         let seq = frame.sequence
         let sp = Diagnostics.signposter.beginInterval("present", id: Diagnostics.signposter.makeSignpostID())
-        let ok = view.render(buffer, drawable: drawable, targetTime: target, refresh: refresh) { [weak self] presented in
+        let ok = view.render(buffer, tags: frame.colourTags, drawable: drawable, targetTime: target, refresh: refresh) { [weak self] presented in
             Diagnostics.signposter.endInterval("present", sp)
             let when = presented > 0 ? presented : target
             if !generated || first {
@@ -494,6 +510,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             // Handoff lag: frame arrival to handing it to the display.
             if !generated, arrival > 0 { stats.noteHandoff(ms: (now - arrival) * 1000) }
         } else {
+            Diagnostics.signposter.endInterval("present", sp)
             stats.noteRenderFailed()
         }
     }
@@ -508,8 +525,10 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         logPhaseSteps(c, snapshot: s, now: now)
         if now - lastLagLog >= 5, s.handoffMean > 0 {
             lastLagLog = now
-            Diagnostics.shared.event(String(format: "lag: arrival->handoff real mean %.1f p95 %.1f ms | arrival->glass real mean %.1f p95 %.1f, generated p50 %.1f ms",
-                                            s.handoffMean, s.handoffP95, s.latencyMean, s.latencyP95, s.generatedLatencyP50))
+            Diagnostics.shared.event(
+                String(
+                    format: "lag: arrival->handoff real mean %.1f p95 %.1f ms | arrival->glass real mean %.1f p95 %.1f, generated p50 %.1f ms",
+                    s.handoffMean, s.handoffP95, s.latencyMean, s.latencyP95, s.generatedLatencyP50))
         }
         let label = gateReason
         telemetry.update { t in
@@ -542,10 +561,13 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         loggedCounters = c
         let drops = (c.droppedReal, s.unpresented, s.renderFailed)
         if drops != loggedDrops, now - lastDropLog >= 5 {
-            Diagnostics.shared.event(String(format: "render: drops real %llu (+%llu) unpresented %llu (+%llu) noDrawable %llu (+%llu) | tick %.2f ms, link lead p50 %.1f ms, hold %d, gen/pair %d",
-                                            drops.0, drops.0 - loggedDrops.real, drops.1, drops.1 - loggedDrops.unpresented,
-                                            drops.2, drops.2 - loggedDrops.failed, pacer.refresh * 1000, linkLead.percentile(0.5),
-                                            pacer.holdSteps, 1))
+            Diagnostics.shared.event(
+                String(
+                    format:
+                        "render: drops real %llu (+%llu) unpresented %llu (+%llu) noDrawable %llu (+%llu) | tick %.2f ms, link lead p50 %.1f ms, hold %d, gen/pair %d",
+                    drops.0, drops.0 - loggedDrops.real, drops.1, drops.1 - loggedDrops.unpresented,
+                    drops.2, drops.2 - loggedDrops.failed, pacer.refresh * 1000, linkLead.percentile(0.5),
+                    pacer.holdSteps, 1))
             loggedDrops = (drops.0, drops.1, drops.2)
             lastDropLog = now
         }
@@ -553,8 +575,10 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         if c.phaseEarlier > old.phaseEarlier { Diagnostics.shared.event(String(format: "render: pacer phase one refresh earlier (slack; budget %.1f ms)", ms)) }
         if c.phaseLater > old.phaseLater { Diagnostics.shared.event(String(format: "render: pacer phase later (missed deadlines; budget %.1f ms)", ms)) }
         if c.queueDrains > old.queueDrains {
-            Diagnostics.shared.event(String(format: "render: present queue backed up (glass - target %.1f ms, usual %.1f ms): one generated frame left out to drain it",
-                                            pacer.drainLag.lag * 1000, pacer.drainLag.usual * 1000))
+            Diagnostics.shared.event(
+                String(
+                    format: "render: present queue backed up (glass - target %.1f ms, usual %.1f ms): one generated frame left out to drain it",
+                    pacer.drainLag.lag * 1000, pacer.drainLag.usual * 1000))
         }
     }
 
@@ -665,12 +689,13 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
                 // presentedTime lags the present call: count the last full second ending 50 ms ago.
                 let end = now - 0.05, start = end - 1
                 let window = presented.filter { $0.time > start && $0.time <= end }
-                return Snapshot(displayed: Double(window.count), generated: Double(window.filter(\.generated).count),
-                                interpP50: interp.percentile(0.5), interpP99: interp.percentile(0.99),
-                                latencyP50: latency.percentile(0.5), generatedLatencyP50: generatedLatency.percentile(0.5),
-                                handoffMean: handoff.mean, handoffP95: handoff.percentile(0.95),
-                                latencyMean: latency.mean, latencyP95: latency.percentile(0.95),
-                                unpresented: unpresented, renderFailed: renderFailed, byBlend: blends)
+                return Snapshot(
+                    displayed: Double(window.count), generated: Double(window.filter(\.generated).count),
+                    interpP50: interp.percentile(0.5), interpP99: interp.percentile(0.99),
+                    latencyP50: latency.percentile(0.5), generatedLatencyP50: generatedLatency.percentile(0.5),
+                    handoffMean: handoff.mean, handoffP95: handoff.percentile(0.95),
+                    latencyMean: latency.mean, latencyP95: latency.percentile(0.95),
+                    unpresented: unpresented, renderFailed: renderFailed, byBlend: blends)
             }
         }
     }

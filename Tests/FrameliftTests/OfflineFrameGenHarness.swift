@@ -30,10 +30,14 @@ import Testing
             try #require(pair.count == 2)
             let plainBox = Box(), guardBox = Box()
             let sem = DispatchSemaphore(value: 0)
-            interp.interpolate(previous: pair[0], current: pair[1]) { r in plainBox.value = r.frames.first; sem.signal() }
+            interp.interpolate(previous: pair[0], current: pair[1]) { r in
+                plainBox.value = r.frames.first; sem.signal()
+            }
             sem.wait()
             let plain = try #require(plainBox.value)
-            blender.keepStatic(previous: pair[0], current: pair[1], generated: plain) { o in guardBox.value = o; sem.signal() }
+            blender.keepStatic(previous: pair[0], current: pair[1], generated: plain) { o in
+                guardBox.value = o; sem.signal()
+            }
             sem.wait()
             let guarded = try #require(guardBox.value)
             let name = String(format: "%05d", k)
@@ -52,8 +56,10 @@ import Testing
     static func decode(clip: String, from: Int, count: Int, w: Int, h: Int) throws -> [CVPixelBuffer] {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
-        p.arguments = ["-v", "error", "-i", clip, "-vf", "select=gte(n\\,\(from))", "-fps_mode", "passthrough",
-                       "-frames:v", "\(count)", "-pix_fmt", "nv12", "-f", "rawvideo", "-"]
+        p.arguments = [
+            "-v", "error", "-i", clip, "-vf", "select=gte(n\\,\(from))", "-fps_mode", "passthrough",
+            "-frames:v", "\(count)", "-pix_fmt", "nv12", "-f", "rawvideo", "-",
+        ]
         let pipe = Pipe()
         p.standardOutput = pipe
         try p.run()
@@ -70,7 +76,8 @@ import Testing
         var buffer: CVPixelBuffer?
         let attrs: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [:], kCVPixelBufferMetalCompatibilityKey as String: true]
         guard CVPixelBufferCreate(nil, w, h, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, attrs as CFDictionary, &buffer) == kCVReturnSuccess,
-              let buffer else { return nil }
+            let buffer
+        else { return nil }
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         nv12.withUnsafeBytes { src in
@@ -89,8 +96,9 @@ import Testing
 
     static func png(_ buffer: CVPixelBuffer, _ path: String) throws {
         let ctx = CIContext()
-        try ctx.writePNGRepresentation(of: CIImage(cvPixelBuffer: buffer), to: URL(fileURLWithPath: path),
-                                       format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+        try ctx.writePNGRepresentation(
+            of: CIImage(cvPixelBuffer: buffer), to: URL(fileURLWithPath: path),
+            format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
     }
 }
 
@@ -123,7 +131,8 @@ import Testing
     @Test func renderSharpnessLevels() throws {
         let env = ProcessInfo.processInfo.environment
         guard let clip = env["FRAMELIFT_CLIP"], let out = env["FRAMELIFT_OUT"],
-              let k = env["FRAMELIFT_SHARP_FRAME"].flatMap(Int.init) else { return }
+            let k = env["FRAMELIFT_SHARP_FRAME"].flatMap(Int.init)
+        else { return }
         let levels = (env["FRAMELIFT_SHARPNESS"] ?? "0,0.6,1,1.5").split(separator: ",").compactMap { Float($0) }
         let (w, h) = (4480, 2520)
         try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
@@ -152,10 +161,12 @@ import Testing
             }
             print(String(format: "sharpness %.2f: mean |laplacian| %.3f", s, lap / Double((w - 2) * (h - 2))))
             let provider = try #require(CGDataProvider(data: Data(bytes) as CFData))
-            let image = try #require(CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
-                                             space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                                             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
-                                             provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+            let image = try #require(
+                CGImage(
+                    width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                    space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
+                    provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
             let url = URL(fileURLWithPath: String(format: "%@/sharp-%.2f.png", out, s)) as CFURL
             let dest = try #require(CGImageDestinationCreateWithURL(url, "public.png" as CFString, 1, nil))
             CGImageDestinationAddImage(dest, image, nil)

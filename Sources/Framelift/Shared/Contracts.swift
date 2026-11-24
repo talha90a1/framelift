@@ -43,13 +43,23 @@ enum VideoCodecKind: Int, Codable, CaseIterable, Sendable {
     }
 }
 
+/// How a frame smaller than the screen is scaled up.
+enum Upscaler: String, Codable, CaseIterable, Identifiable, Sendable {
+    /// Catmull-Rom with adaptive sharpening (the Sharpness setting), in the present pass.
+    case sharp
+    /// Apple's MetalFX spatial scaler.
+    case metalFX
+
+    var id: String { rawValue }
+}
+
 struct StreamSettings: Codable, Equatable, Sendable {
     var width: UInt32 = 1920
     var height: UInt32 = 1080
     /// Stream preset requested from the PS5. 30 for 30 fps games (no duplicate frames), interpolated to 60.
     var streamFPS: UInt32 = 30
     var bitrateKbps: UInt32 = 30000
-    // HEVC: sharper at the same bitrate.
+    // HEVC: sharper at the same bitrate. HEVC HDR asks for HDR; the PS5 still sends SDR when the game or its output is SDR.
     var codec: VideoCodecKind = .hevc
     /// CGDirectDisplayID of the screen to play on (TV over HDMI or built-in). nil = screen of the main window.
     var targetDisplayID: UInt32?
@@ -58,17 +68,18 @@ struct StreamSettings: Codable, Equatable, Sendable {
     var sceneCutFallback: Bool = true
     /// Performance overlay (Cmd+Shift+O).
     var showOverlay: Bool = false
-    /// Spare Apple ML request between frames on a second session, so the model stays fast. Read at stream start.
+    /// Sampled at stream start.
     var keepLLFIWarm: Bool = true
     /// Copy pixels that don't move between the real frames (subtitles, HUD) into the generated frame.
     var keepStaticOverlays: Bool = true
     /// 50/50 blend shown when Apple's frame misses its deadline; off repeats the real frame instead.
     var blendFallback: Bool = true
     var sharpness: Double = StreamSettingsLimits.defaultSharpness
+    var upscaler: Upscaler = .sharp
 
     enum CodingKeys: String, CodingKey {
         case width, height, streamFPS, bitrateKbps, codec, targetDisplayID, fullscreen, sceneCutFallback
-        case showOverlay, keepLLFIWarm, keepStaticOverlays, blendFallback, sharpness
+        case showOverlay, keepLLFIWarm, keepStaticOverlays, blendFallback, sharpness, upscaler
     }
 }
 
@@ -90,6 +101,7 @@ extension StreamSettings {
         keepStaticOverlays = try c.decodeIfPresent(Bool.self, forKey: .keepStaticOverlays) ?? keepStaticOverlays
         blendFallback = try c.decodeIfPresent(Bool.self, forKey: .blendFallback) ?? blendFallback
         sharpness = try c.decodeIfPresent(Double.self, forKey: .sharpness) ?? sharpness
+        upscaler = (try? c.decodeIfPresent(Upscaler.self, forKey: .upscaler)) ?? upscaler
     }
 }
 
@@ -122,6 +134,7 @@ struct DecodedFrame: @unchecked Sendable {
     var decodedHostTime: UInt64
     /// True after loss, IDR recovery or decoder reset: never interpolate across it.
     var discontinuity: Bool
+    var colourTags: ColourTags = .untagged
 }
 
 protocol FrameSink: AnyObject {
@@ -147,8 +160,8 @@ struct ControllerSnapshot: Equatable, Sendable {
     }
     struct Touch: Equatable, Sendable {
         var id: Int8 = -1
-        var x: UInt16 = 0 // 0...1919
-        var y: UInt16 = 0 // 0...1079
+        var x: UInt16 = 0  // 0...1919
+        var y: UInt16 = 0  // 0...1079
     }
     var buttons: Buttons = []
     /// -32768...32767, +y = down (chiaki convention).

@@ -87,7 +87,7 @@ enum DisplayBuffering: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     static let defaultsKey = "framelift.buffering.v1"
     var drawableCount: Int { self == .triple ? 3 : 2 }
-    var title: String { self == .triple ? "3 – lower lag (recommended)" : "2 – fewer dropped frames on slow Macs" }
+    var title: String { self == .triple ? "3 (default)" : "2" }
     static func stored(_ defaults: UserDefaults = .standard) -> DisplayBuffering {
         defaults.string(forKey: defaultsKey).flatMap(DisplayBuffering.init(rawValue:)) ?? .triple
     }
@@ -107,6 +107,7 @@ final class MetalPresenterView: NSView {
     private(set) var presentEncoder: PresentEncoder?
     private var hud: HUDText?
     var sharpness: Float = Float(StreamSettingsLimits.defaultSharpness)
+    var upscaler: Upscaler = .sharp
     /// Method the last present used (render thread).
     private(set) var lastUpscaleMethod: UpscaleMethod = .bilinear
     /// Colour handling (any thread; applied on the next present). Follows the app setting stored
@@ -117,11 +118,10 @@ final class MetalPresenterView: NSView {
     }
     private var _colourMode = ColourMode.stored()
     private var defaultsObserver: NSObjectProtocol?
-    /// Mapping in use (render thread) and what it was derived from.
-    private(set) var colourMapping = ColourMapping.standard
-    private var colourSource: (generation: UInt64, mode: ColourMode)?
-    /// Layer colourspace last applied (render thread).
-    private var appliedLayerSpace = LayerColourSpace.sRGB
+    private var colourSource: (tags: ColourTags, mode: ColourMode)?
+    private var requestedLayerSpace = LayerColourSpace.sRGB
+    private var requestedLayerRevision = 0
+    private var appliedLayerRevision = 0
     /// Render thread: lines of the in-frame HUD, nil hides it. Drawn in the same render pass
     /// as the video (no overlay layer), so direct-to-display stays possible.
     func setHUD(_ lines: [HUDLine]?) {
@@ -175,7 +175,7 @@ final class MetalPresenterView: NSView {
         do {
             let ctx = try RenderContext.shared()
             context = ctx
-            presentEncoder = try PresentEncoder(context: ctx, pixelFormat: .bgra8Unorm)
+            presentEncoder = try PresentEncoder(context: ctx)
             hud = HUDText(device: ctx.device)
         } catch {
             NSLog("[render] presenter setup failed: %@", "\(error)")
@@ -191,7 +191,8 @@ final class MetalPresenterView: NSView {
             }
         }
         // Switching the display to Variable (or back) mid-stream changes no window screen: re-read it.
-        screenParamsObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+        screenParamsObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) {
+            [weak self] _ in
             MainActor.assumeIsolated { self?.screenParametersChanged() }
         }
     }
@@ -212,7 +213,7 @@ final class MetalPresenterView: NSView {
         l.displaySyncEnabled = true
         l.wantsExtendedDynamicRangeContent = false
         // Default mapping's space (sRGB) until the first frame's tags arrive; see ColourPipeline.swift.
-        l.colorspace = appliedLayerSpace.makeColorSpace()
+        l.colorspace = LayerColourSpace.sRGB.makeColorSpace()
         l.backgroundColor = NSColor.black.cgColor
         l.isOpaque = true
         l.allowsNextDrawableTimeout = true
@@ -246,7 +247,8 @@ final class MetalPresenterView: NSView {
         for o in visibilityObservers { NotificationCenter.default.removeObserver(o); NSWorkspace.shared.notificationCenter.removeObserver(o) }
         visibilityObservers.removeAll()
         if let window {
-            screenObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: window, queue: .main) { [weak self] _ in
+            screenObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: window, queue: .main) {
+                [weak self] _ in
                 guard let self else { return }
                 Diagnostics.shared.event("render: window screen changed to \(self.window?.screen?.localizedName ?? "none") (\(self.visibilitySummary))")
                 self.updateDrawableSize()
@@ -260,8 +262,9 @@ final class MetalPresenterView: NSView {
                 nc.addObserver(forName: NSWindow.didDeminiaturizeNotification, object: window, queue: .main, using: update),
                 nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main, using: update),
                 nc.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main, using: update),
-                NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil,
-                                                                  queue: .main, using: update),
+                NSWorkspace.shared.notificationCenter.addObserver(
+                    forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil,
+                    queue: .main, using: update),
             ]
         }
         updateDrawableSize()
@@ -348,29 +351,23 @@ final class MetalPresenterView: NSView {
 
     // MARK: Rendering (render thread)
 
-    /// Re-derives the colour mapping when the stream's tags or the colour mode changed (one lock
-    /// per present otherwise), logs it, and retags the layer on the main thread.
-    private func updateColour() {
-        let (tags, generation) = StreamColour.shared.snapshot
-        let mode = colourMode
-        if let s = colourSource, s.generation == generation, s.mode == mode { return }
-        colourSource = (generation, mode)
+    private func updateColour(_ tags: ColourTags, mode: ColourMode) {
+        if let source = colourSource, source.tags == tags, source.mode == mode { return }
+        colourSource = (tags, mode)
         let mapping = ColourMapping.decide(tags, mode: mode)
-        colourMapping = mapping
         presentEncoder?.colour = mapping
         Diagnostics.shared.event("colour: \(tags.summary) mode=\(mode.rawValue) -> \(mapping.summary)")
-        guard mapping.layer != appliedLayerSpace else { return }
-        appliedLayerSpace = mapping.layer
         let wanted = mapping.layer
+        guard wanted != requestedLayerSpace else { return }
+        requestedLayerSpace = wanted
+        requestedLayerRevision += 1
+        let revision = requestedLayerRevision
         DispatchQueue.main.async { [weak self] in
-            guard let layer = self?.metalLayer else { return }
-            if let space = wanted.makeColorSpace() {
-                layer.colorspace = space
-                if layer.colorspace == nil { Diagnostics.shared.event("colour: layer rejected \(wanted.summary), untagged") }
-            } else {
-                layer.colorspace = LayerColourSpace.sRGB.makeColorSpace()
-                Diagnostics.shared.event("colour: cannot build \(wanted.summary), using sRGB")
-            }
+            guard let self, let layer = self.metalLayer else { return }
+            layer.pixelFormat = wanted.isHDR ? .bgr10a2Unorm : .bgra8Unorm
+            layer.wantsExtendedDynamicRangeContent = wanted.isHDR
+            layer.colorspace = wanted.makeColorSpace()
+            self.stateLock.withLock { self.appliedLayerRevision = revision }
         }
     }
 
@@ -378,27 +375,41 @@ final class MetalPresenterView: NSView {
     /// command buffer.
     /// `onPresented` gets the actual on-glass host time (0 when the drawable was dropped).
     @discardableResult
-    func render(_ frame: CVPixelBuffer, drawable given: CAMetalDrawable?, targetTime: Double, refresh: Double,
-                onPresented: ((Double) -> Void)? = nil) -> Bool {
+    func render(
+        _ frame: CVPixelBuffer, tags: ColourTags, drawable given: CAMetalDrawable?, targetTime: Double, refresh: Double,
+        onPresented: ((Double) -> Void)? = nil
+    ) -> Bool {
         guard let ctx = context, let presentEncoder, let metalLayer else { return false }
+        let (mode, appliedRevision) = stateLock.withLock { (_colourMode, appliedLayerRevision) }
+        updateColour(tags, mode: mode)
+        // Drop drawables from before the colour-space change, including any supplied by the display link.
+        guard appliedRevision == requestedLayerRevision else { return false }
+        let format: MTLPixelFormat = requestedLayerSpace.isHDR ? .bgr10a2Unorm : .bgra8Unorm
         let asked = CACurrentMediaTime()
         let next = given ?? metalLayer.nextDrawable()
         let waited = CACurrentMediaTime() - asked
         if waited > 0.1, asked - lastSlowDrawableLog >= 1 {
             // The window server is not giving drawables back.
             lastSlowDrawableLog = asked
-            Diagnostics.shared.event(String(format: "render: nextDrawable blocked %.0f ms (%@)%@", waited * 1000, visibilitySummary,
-                                            next == nil ? ", none" : ""))
+            Diagnostics.shared.event(
+                String(
+                    format: "render: nextDrawable blocked %.0f ms (%@)%@", waited * 1000, visibilitySummary,
+                    next == nil ? ", none" : ""))
         }
-        guard let drawable = next, let cb = ctx.queue.makeCommandBuffer() else { return false }
+        guard let drawable = next, drawable.texture.pixelFormat == format, let cb = ctx.queue.makeCommandBuffer() else { return false }
         cb.label = "framelift.present"
-        updateColour()
         presentEncoder.sharpness = sharpness
-        guard let (method, keep) = presentEncoder.encode(frame, into: drawable.texture, commandBuffer: cb,
-                                                         hud: hudVisible ? hud?.texture : nil) else { return false }
+        presentEncoder.upscaler = upscaler
+        guard
+            let (method, keep) = presentEncoder.encode(
+                frame, into: drawable.texture, commandBuffer: cb,
+                hud: hudVisible ? hud?.texture : nil)
+        else { return false }
         if method != lastUpscaleMethod {
             lastUpscaleMethod = method
-            Diagnostics.shared.event("render: present \(CVPixelBufferGetWidth(frame))x\(CVPixelBufferGetHeight(frame)) -> \(drawable.texture.width)x\(drawable.texture.height) via \(method.rawValue)")
+            Diagnostics.shared.event(
+                "render: present \(CVPixelBufferGetWidth(frame))x\(CVPixelBufferGetHeight(frame)) -> \(drawable.texture.width)x\(drawable.texture.height) via \(method.rawValue)"
+            )
         }
         if let onPresented {
             drawable.addPresentedHandler { d in onPresented(d.presentedTime) }
@@ -406,7 +417,7 @@ final class MetalPresenterView: NSView {
         if given != nil {
             cb.present(drawable)
         } else {
-            cb.present(drawable, atTime: targetTime - refresh * 0.5)   // half a refresh before the target vsync
+            cb.present(drawable, atTime: targetTime - refresh * 0.5)  // half a refresh before the target vsync
         }
         cb.addCompletedHandler { cb in
             GPUTiming.shared.addPresent(cb)

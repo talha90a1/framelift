@@ -15,9 +15,11 @@ enum StreamPreset: String, CaseIterable, Identifiable {
     private var is1080: Bool { self == .p1080fps30 || self == .p1080fps60 }
 
     init?(settings: StreamSettings) {
-        guard let match = Self.allCases.first(where: {
-            $0.width == settings.width && $0.height == settings.height && $0.fps == settings.streamFPS
-        }) else { return nil }
+        guard
+            let match = Self.allCases.first(where: {
+                $0.width == settings.width && $0.height == settings.height && $0.fps == settings.streamFPS
+            })
+        else { return nil }
         self = match
     }
 
@@ -45,7 +47,7 @@ struct SettingsStore {
 
     func load() -> StreamSettings {
         guard let data = defaults.data(forKey: Self.key),
-              let decoded = try? JSONDecoder().decode(StreamSettings.self, from: data)
+            let decoded = try? JSONDecoder().decode(StreamSettings.self, from: data)
         else { return StreamSettings() }
         return Self.sanitized(decoded)
     }
@@ -55,16 +57,15 @@ struct SettingsStore {
         defaults.set(data, forKey: Self.key)
     }
 
-
-    /// Clamps stored values to what the app offers: a PS5 preset, 8-bit H.264/HEVC, and a frame-generation backend.
+    /// Clamps stored values to what the app offers: a PS5 preset, a bitrate and a sharpness in range.
     static func sanitized(_ settings: StreamSettings) -> StreamSettings {
         var result = settings
         if StreamPreset(settings: result) == nil { StreamPreset.p1080fps30.apply(to: &result) }
-        if result.codec == .hevcHDR { result.codec = .hevc }
         let range = StreamSettingsLimits.bitrateRangeKbps
         result.bitrateKbps = min(max(result.bitrateKbps, range.lowerBound), range.upperBound)
         let sharp = StreamSettingsLimits.sharpnessRange
-        result.sharpness = result.sharpness.isFinite
+        result.sharpness =
+            result.sharpness.isFinite
             ? min(max(result.sharpness, sharp.lowerBound), sharp.upperBound) : StreamSettingsLimits.defaultSharpness
         return result
     }

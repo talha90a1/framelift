@@ -6,15 +6,16 @@ import Testing
 @testable import Framelift
 
 struct ColourMappingTests {
-    private let ps5SDR = ColourTags(matrix: kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String,
-                                    primaries: kCVImageBufferColorPrimaries_ITU_R_709_2 as String,
-                                    transfer: kCVImageBufferTransferFunction_ITU_R_709_2 as String,
-                                    fullRange: false)
+    private let ps5SDR = ColourTags(
+        matrix: kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String,
+        primaries: kCVImageBufferColorPrimaries_ITU_R_709_2 as String,
+        transfer: kCVImageBufferTransferFunction_ITU_R_709_2 as String,
+        fullRange: false)
 
     @Test func ps5SDRMapsToBT709VideoRangeSRGB() {
         let m = ColourMapping.decide(ps5SDR, mode: .automatic)
         #expect(m == ColourMapping.standard)
-        #expect(!m.matrixAssumed && !m.hdrFallback)
+        #expect(!m.matrixAssumed && !m.layer.isHDR)
         #expect(m.layer.makeColorSpace()?.name == CGColorSpace.sRGB)
     }
 
@@ -30,16 +31,17 @@ struct ColourMappingTests {
         let sd = ColourMapping.decide(tags, mode: .automatic)
         #expect(sd.matrix == .bt601 && sd.fullRange && sd.layer == .sRGB)
 
-        tags = ColourTags(matrix: kCVImageBufferYCbCrMatrix_ITU_R_2020 as String,
-                          primaries: kCVImageBufferColorPrimaries_ITU_R_2020 as String,
-                          transfer: kCVImageBufferTransferFunction_ITU_R_709_2 as String, fullRange: false)
+        tags = ColourTags(
+            matrix: kCVImageBufferYCbCrMatrix_ITU_R_2020 as String,
+            primaries: kCVImageBufferColorPrimaries_ITU_R_2020 as String,
+            transfer: kCVImageBufferTransferFunction_ITU_R_709_2 as String, fullRange: false)
         let wide = ColourMapping.decide(tags, mode: .automatic)
-        #expect(wide.matrix == .bt2020 && wide.layer == LayerColourSpace(primaries: .bt2020, curve: .sRGB) && !wide.hdrFallback)
+        #expect(wide.matrix == .bt2020 && wide.layer == LayerColourSpace(primaries: .bt2020, curve: .sRGB) && !wide.layer.isHDR)
         #expect(wide.layer.makeColorSpace()?.name == CGColorSpace.itur_2020_sRGBGamma)
 
         tags.transfer = kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String
         let hdr = ColourMapping.decide(tags, mode: .automatic)
-        #expect(hdr.hdrFallback && hdr.layer.curve == .sRGB)
+        #expect(hdr.layer == LayerColourSpace(primaries: .bt2020, curve: .pq) && hdr.layer.isHDR)
     }
 
     @Test func manualModesPickTheCurve() {
@@ -57,7 +59,7 @@ struct ColourMappingTests {
         #expect(close(k.r.z, 1.5748) && close(k.g.y, -0.1873) && close(k.g.z, -0.4681) && close(k.b.y, 1.8556))
         #expect(close(k.range.x, 255.0 / 219) && close(k.range.y, -16.0 / 219))
         #expect(close(k.range.z, 255.0 / 224) && close(k.range.w, -128.0 / 224))
-        #expect(MemoryLayout<PresentColourConstants>.stride == 80)   // 5 x float4 in Present.metal
+        #expect(MemoryLayout<PresentColourConstants>.stride == 80)  // 5 x float4 in Present.metal
     }
 
     @Test func storedModeDefaultsToAutomatic() {
