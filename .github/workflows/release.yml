@@ -52,6 +52,22 @@ jobs:
       - name: Test
         run: swift test
 
+      - name: Import signing certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/release.keychain-db"
+          password=$(openssl rand -hex 16)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/release.p12"
+          security import "$RUNNER_TEMP/release.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/release.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+
       - name: Build release zip
         run: scripts/release.sh
 
@@ -61,6 +77,20 @@ jobs:
           scripts/release_source.py "${GITHUB_REF_NAME#v}"
           cp "$RUNNER_TEMP/release-notes.md" dist/
 
+      - name: Write appcast
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p "$RUNNER_TEMP/updates"
+          cp "dist/Framelift-$version-macOS-arm64.zip" "$RUNNER_TEMP/updates/"
+          scripts/release_notes.sh --changes "$version" > "$RUNNER_TEMP/updates/Framelift-$version-macOS-arm64.md"
+          echo "$SPARKLE_PRIVATE_KEY" | .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+            --ed-key-file - --embed-release-notes \
+            --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" \
+            -o dist/appcast.xml "$RUNNER_TEMP/updates"
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: Framelift-release
@@ -69,6 +99,7 @@ jobs:
             dist/Framelift-*-macOS-arm64.zip.sha256
             dist/Framelift-*-source.tar.gz
             dist/release-notes.md
+            dist/appcast.xml
           if-no-files-found: error
 
   publish:
@@ -99,5 +130,5 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             dist/Framelift-*-macOS-arm64.zip dist/Framelift-*-macOS-arm64.zip.sha256 \
-            dist/Framelift-*-source.tar.gz --verify-tag --title "Framelift ${GITHUB_REF_NAME#v}" \
+            dist/Framelift-*-source.tar.gz dist/appcast.xml --verify-tag --title "Framelift ${GITHUB_REF_NAME#v}" \
             --notes-file dist/release-notes.md

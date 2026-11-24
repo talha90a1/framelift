@@ -4,6 +4,7 @@
 
 ### Added
 
+- Download and install updates from **Framelift › Check for Updates…**.
 - 1080p and 720p presets at 30 or 60 fps.
 - 10-bit HDR on compatible displays.
 - Apple MetalFX upscaling.

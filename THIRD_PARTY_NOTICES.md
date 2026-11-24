@@ -39,6 +39,12 @@ Framelift first shipped its ports and modifications on November 23, 2026. Releas
 
 Framelift plays on the local network only and does not start chiaki-ng's internet connection code, but the libraries are still linked. The Homebrew versions are whatever `brew install` provides when you build. The license files in `licenses/` were copied from the installed Homebrew packages and the pinned chiaki-ng submodules.
 
+## Bundled framework
+
+| Component | Upstream | License | What we use |
+| --- | --- | --- | --- |
+| Sparkle 2.10.1 | https://github.com/sparkle-project/Sparkle, via Swift Package Manager | MIT and related permissive licenses ([licenses/sparkle.txt](licenses/sparkle.txt)) | Software updates, embedded as `Contents/Frameworks/Sparkle.framework`. |
+
 ## Code that follows other projects
 
 These projects are references for report layouts and device handling. Their license notices follow.

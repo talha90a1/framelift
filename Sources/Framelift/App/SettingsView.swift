@@ -4,8 +4,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var updates: UpdateChecker
-    @AppStorage(UpdateChecks.defaultsKey) private var checkForUpdates = true
+    @EnvironmentObject private var updates: Updater
     @AppStorage(TouchpadMode.defaultsKey) private var touchpad: TouchpadMode = .clickOnly
     @AppStorage(DebugLogs.defaultsKey) private var debugLogs = DebugLogs.enabledByDefault
     @AppStorage(DisplayBuffering.defaultsKey) private var buffering: DisplayBuffering = .triple
@@ -82,9 +81,11 @@ struct SettingsView: View {
             }
 
             Section("Updates") {
-                Toggle("Check for updates at launch", isOn: $checkForUpdates)
+                Toggle("Check for updates automatically", isOn: $updates.automaticallyChecks)
+                Toggle("Install updates automatically", isOn: $updates.automaticallyInstalls)
+                    .disabled(!updates.automaticallyChecks)
                 Button("Check Now") { updates.checkNow() }
-                    .disabled(updates.status == .checking)
+                    .disabled(!updates.canCheck)
             }
 
             Section("Debug") {
@@ -110,7 +111,7 @@ struct SettingsView: View {
                     touchpad = .clickOnly
                     buffering = .triple
                     debugLogs = DebugLogs.enabledByDefault
-                    checkForUpdates = true
+                    updates.automaticallyChecks = true
                 }
             }
         }

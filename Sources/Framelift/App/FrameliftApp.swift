@@ -34,12 +34,11 @@ struct FrameliftApp: App {
                 .environmentObject(model.consoles)
                 .environmentObject(model.coordinator)
                 .environmentObject(model.input)
-                .environmentObject(model.updates)
         }
         .defaultSize(width: 620, height: 460)
         .commands {
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") { model.updates.checkNow() }
+                CheckForUpdatesButton(updater: model.updates)
                 if let license = Bundle.main.url(forResource: "LICENSE", withExtension: nil),
                     let notices = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md")
                 {
