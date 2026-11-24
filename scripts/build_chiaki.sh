@@ -30,34 +30,41 @@ pin() {
   [[ "$(git -C "$dir" rev-parse HEAD)" == "$sha" ]] || { echo "${dir:t}: HEAD is not the pin $sha" >&2; exit 1; }
   echo "${dir:t} at $sha"
 }
-pin "$CHIAKI" https://github.com/streetpea/chiaki-ng.git "$PIN_CHIAKI" submodules
-pin "$VEYRA" https://github.com/Likely7/Veyra-NRVideo.git "$PIN_VEYRA"
-PATCH="$VEYRA/scripts/remoteplay/patches/0002-chiaki-video-metadata.patch"
-if git -C "$CHIAKI" apply --check "$PATCH" 2>/dev/null; then git -C "$CHIAKI" apply "$PATCH"; echo "applied 0002"; 
-elif git -C "$CHIAKI" apply -R --check "$PATCH" 2>/dev/null; then echo "0002 already applied";
-else echo "0002 metadata patch does not fit this chiaki-ng revision" >&2; exit 1; fi
-# Framelift patches (scripts/patches/*.patch), e.g. 0100: user-interactive QoS for chiaki threads.
-# Check "already applied" first: a patch that only inserts lines (0110) can still apply forward
-# a second time, because its own last lines repeat the context it was anchored on.
+if [[ -f "$ROOT/SOURCE_REVISIONS.txt" ]]; then
+  export GIT_CEILING_DIRECTORIES="$ROOT"
+else
+  pin "$CHIAKI" https://github.com/streetpea/chiaki-ng.git "$PIN_CHIAKI" submodules
+  pin "$VEYRA" https://github.com/Likely7/Veyra-NRVideo.git "$PIN_VEYRA"
+fi
+apply_patch_to() {
+  local dir=$1 patch=$2
+  if git -C "$dir" apply -R --check "$patch" 2>/dev/null; then
+    echo "${patch:t} already applied"
+  else
+    git -C "$dir" apply "$patch"
+    echo "applied ${patch:t}"
+  fi
+}
+apply_patch_to "$CHIAKI" "$VEYRA/scripts/remoteplay/patches/0002-chiaki-video-metadata.patch"
 for P in "$ROOT"/scripts/patches/*.patch(N); do
-  if git -C "$CHIAKI" apply -R --check "$P" 2>/dev/null; then echo "${P:t} already applied";
-  elif git -C "$CHIAKI" apply --check "$P" 2>/dev/null; then git -C "$CHIAKI" apply "$P"; echo "applied ${P:t}";
-  else echo "${P:t} does not fit this chiaki-ng revision; if a patch changed, reset with: git -C third_party/chiaki-ng checkout -f -- ." >&2; exit 1; fi
+  apply_patch_to "$CHIAKI" "$P"
 done
-[[ -d "$ROOT/.venv" ]] || { python3 -m venv "$ROOT/.venv"; "$ROOT/.venv/bin/pip" install -q protobuf grpcio-tools; }
+apply_patch_to "$CHIAKI/third-party/curl" "$ROOT/scripts/patches/curl/0001-initialize-empty-upload-buffer.patch"
+[[ -d "$ROOT/.venv" ]] || { python3 -m venv "$ROOT/.venv"; "$ROOT/.venv/bin/pip" --disable-pip-version-check install -q protobuf grpcio-tools; }
 export PATH="$ROOT/.venv/bin:$PATH"
 brew list miniupnpc libevent json-c opus openssl@3 >/dev/null 2>&1 || brew install miniupnpc libevent json-c opus openssl@3
 SSL=/opt/homebrew/opt/openssl@3
 BUILD="${CHIAKI_BUILD_DIR:-$ROOT/build/chiaki}"
 rm -rf "$BUILD"
+# Pinned C dependencies still use the deprecated OpenSSL EC and macOS Gestalt APIs.
 cmake -S "$CHIAKI" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
-  -DCMAKE_C_FLAGS="-I$SSL/include" -DCMAKE_CXX_FLAGS="-I$SSL/include" \
+  -DCMAKE_C_FLAGS="-I$SSL/include -Wno-deprecated-declarations" -DCMAKE_CXX_FLAGS="-I$SSL/include" \
   -DCHIAKI_ENABLE_GUI=OFF -DCHIAKI_ENABLE_CLI=OFF -DCHIAKI_ENABLE_TESTS=OFF -DCHIAKI_ENABLE_FFMPEG_DECODER=OFF \
   -DCHIAKI_ENABLE_PI_DECODER=OFF -DCHIAKI_ENABLE_SETSU=OFF -DCHIAKI_ENABLE_STEAMDECK_NATIVE=OFF \
   -DCHIAKI_ENABLE_STEAM_SHORTCUT=OFF -DCHIAKI_ENABLE_SPEEX=OFF -DCHIAKI_LIB_ENABLE_OPUS=ON \
   -DOpus_INCLUDE_DIRS=/opt/homebrew/opt/opus/include -DOpus_LIBRARIES=/opt/homebrew/opt/opus/lib/libopus.a \
   -DCURL_USE_LIBSSH2=OFF -DCURL_USE_LIBPSL=OFF -DUSE_NGHTTP2=OFF -DUSE_LIBIDN2=OFF -DCURL_ZSTD=OFF -DCURL_BROTLI=OFF \
-  -DOPENSSL_ROOT_DIR=$SSL -DCMAKE_PREFIX_PATH="$SSL;/opt/homebrew" -DPYTHON_EXECUTABLE="$ROOT/.venv/bin/python3" -DPython3_EXECUTABLE="$ROOT/.venv/bin/python3" >/dev/null
+  -DOPENSSL_ROOT_DIR=$SSL -DCMAKE_PREFIX_PATH="$SSL;/opt/homebrew" -DPython_EXECUTABLE="$ROOT/.venv/bin/python3" >/dev/null
 make -C "$BUILD" -j"$(sysctl -n hw.ncpu)" chiaki-lib >/dev/null
 # Stage headers + static libs where Package.swift expects them.
 OUT="${CHIAKI_DIST_DIR:-$ROOT/build/chiaki-dist}"; rm -rf "$OUT"; mkdir -p "$OUT/lib" "$OUT/include"
