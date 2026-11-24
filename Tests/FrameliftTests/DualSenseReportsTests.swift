@@ -141,7 +141,7 @@ import Testing
     }
 
     @Test func feedbackModeDefaultsToExact() {
-        let suite = "framelift.tests.dualsense.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
         defer { removeTestDefaults(suite) }
         #expect(DualSenseFeedbackMode.stored(defaults) == .exact)
