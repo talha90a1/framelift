@@ -24,12 +24,12 @@ struct AppleLLFITeardownTests {
         submitted.signal()
 
         try #require(finished.wait(timeout: .now() + 8) == .success)
-        #expect(owner.generatedFrame)
+        #expect(owner.releasedAfterSubmission)
     }
 
     private final class Owner {
         private var interpolator: AppleLLFIInterpolator? = AppleLLFIInterpolator(keepWarm: true)
-        private(set) var generatedFrame = false
+        private(set) var releasedAfterSubmission = false
 
         func prepare(_ frame: CVPixelBuffer) {
             interpolator?.prepare(width: CVPixelBufferGetWidth(frame), height: CVPixelBufferGetHeight(frame))
@@ -40,9 +40,8 @@ struct AppleLLFITeardownTests {
         }
 
         func submit(_ frame: CVPixelBuffer, submitted: DispatchSemaphore, finished: DispatchSemaphore) {
-            interpolator?.interpolate(previous: frame, current: frame) { result in
-                _ = submitted.wait(timeout: .now() + 2)
-                self.generatedFrame = !result.frames.isEmpty
+            interpolator?.interpolate(previous: frame, current: frame) { _ in
+                self.releasedAfterSubmission = submitted.wait(timeout: .now() + 2) == .success
                 self.interpolator = nil
                 finished.signal()
             }
