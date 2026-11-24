@@ -21,6 +21,13 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN_DIR/Framelift" "$APP/Contents/MacOS/Framelift"
+if [[ "${FRAMELIFT_STRIP:-0}" == 1 ]]; then
+  BINARY="$APP/Contents/MacOS/Framelift"
+  if codesign -d "$BINARY" >/dev/null 2>&1; then
+    codesign --remove-signature "$BINARY"
+  fi
+  strip -S -x "$BINARY"
+fi
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 [[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"

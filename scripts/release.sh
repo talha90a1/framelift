@@ -10,12 +10,10 @@ export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
 NAME="Framelift-${VERSION}-macOS-arm64"
 
-FRAMELIFT_SIGN_IDENTITY=- scripts/bundle_app.sh
+# Strip debug symbols before signing because they can contain the builder's home directory.
+FRAMELIFT_STRIP=1 FRAMELIFT_SIGN_IDENTITY=- scripts/bundle_app.sh
 
 APP=dist/Framelift.app
-# Drop debug symbols: they carry absolute build paths (the builder's home folder and user name).
-strip -S -x "$APP/Contents/MacOS/Framelift"
-codesign --force --deep -s - --entitlements Resources/Framelift.entitlements "$APP"
 # Releases are built by GitHub Actions; a local build embeds the builder's home folder in compiler-made
 # path strings, so it is refused unless it runs on a CI runner.
 if [[ -z "${GITHUB_ACTIONS:-}" ]] && grep -rIaq -e "$HOME" -e "/Users/$USER/" "$APP"; then
