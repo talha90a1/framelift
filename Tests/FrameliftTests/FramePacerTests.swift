@@ -11,15 +11,15 @@ import Testing
 /// `generated`: generated frames per pair (1: 60 fps output, 3: 120 fps output). `tickEvery`: the
 /// display link calls back every n refreshes but reports the panel's refresh (a pinned link).
 private struct PacerRun {
-    var a2p: [(t: Double, ms: Double)] = []       // arrival -> glass of real frames after 1 s
-    var realIntervals: [Int] = []                 // in panel refreshes
+    var a2p: [(t: Double, ms: Double)] = []  // arrival -> glass of real frames after 1 s
+    var realIntervals: [Int] = []  // in panel refreshes
     var counters = PacerCounters()
     var rescues = 0
-    var earlierSteps: [Double] = []               // vsync times of phase steps
+    var earlierSteps: [Double] = []  // vsync times of phase steps
     var laterSteps: [Double] = []
     var drains: [Double] = []
-    var holds: [Int] = []                         // refreshes each committed image stayed up (after 1 s)
-    var generatedPerPair: [Int] = []              // generated images shown before each real frame (after 1 s)
+    var holds: [Int] = []  // refreshes each committed image stayed up (after 1 s)
+    var generatedPerPair: [Int] = []  // generated images shown before each real frame (after 1 s)
 
     /// How many images were held each number of refreshes (for failure messages).
     var holdCounts: [Int: Int] { Dictionary(grouping: holds) { $0 }.mapValues(\.count) }
@@ -44,9 +44,11 @@ private struct PacerRun {
     }
 }
 
-private func simulatePacer(fps: Double, hz: Double = 60, seconds: Double, generated: Int = 1, tickEvery: Int = 1,
-                           interpMs: (Double) -> Double, stallAt: Double? = nil, lagStepAt: Double? = nil,
-                           tvLag: Bool = false, onTimePresents: Int = 0, seed: UInt64 = 7) -> PacerRun {
+private func simulatePacer(
+    fps: Double, hz: Double = 60, seconds: Double, generated: Int = 1, tickEvery: Int = 1,
+    interpMs: (Double) -> Double, stallAt: Double? = nil, lagStepAt: Double? = nil,
+    tvLag: Bool = false, onTimePresents: Int = 0, seed: UInt64 = 7
+) -> PacerRun {
     var rng = seed
     func uniform() -> Double { rng = rng &* 6364136223846793005 &+ 1442695040888963407; return Double(rng >> 11) / Double(1 << 53) }
     func gauss() -> Double { let u = max(1e-12, uniform()), v = uniform(); return (-2 * log(u)).squareRoot() * cos(2 * .pi * v) }
@@ -180,6 +182,21 @@ private func simulatePacer(fps: Double, hz: Double = 60, seconds: Double, genera
 }
 
 struct FramePacerTests {
+    @Test func resetsInterpolationBudgetOnlyWhenRequested() {
+        let pacer = FramePacer()
+        let startup = pacer.budget
+        for _ in 0..<10 { pacer.noteReadyOffset(0.03) }
+        let learned = pacer.budget
+        #expect(learned > startup)
+
+        pacer.reset(keepingBudget: true)
+        #expect(pacer.budget == learned)
+
+        pacer.reset()
+        pacer.noteReadyOffset(0.012)
+        #expect(pacer.budget == startup)
+    }
+
     /// 29.97 fps on 60.00 Hz beats by one refresh every ~16.7 s. Smooth mode must follow it with
     /// single 50 ms steps and never let the phase creep later: no latency growth over 60 s.
     @Test func smoothHasNoLatencyGrowthAt2997On60() {

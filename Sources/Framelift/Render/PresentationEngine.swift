@@ -142,6 +142,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             self.cancelWait()
             self.held = nil
             self.pacer.reset()
+            self.interpSamples = 0
             self.llfi?.reset()
         }
     }
@@ -202,7 +203,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             epoch += 1
             cancelWait()
             held = nil
-            pacer.reset()
+            pacer.reset(keepingBudget: true)
             records.removeAll()
             if let frame = previous, let target {
                 present(
