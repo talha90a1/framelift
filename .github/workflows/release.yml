@@ -1,22 +1,40 @@
 name: Release
 
-# Push a tag like v0.1.0 to build an ad hoc signed Apple Silicon zip and publish it as a GitHub release.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
 
 jobs:
-  release:
+  build:
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check release tag
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        run: |
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match app version $version"
+            exit 1
+          fi
+          git merge-base --is-ancestor HEAD origin/main
+          if ! grep -qF 'static let enabledByDefault = false' Sources/Framelift/Shared/Diagnostics.swift; then
+            echo "::error::Turn off Debug logs by default before releasing"
+            exit 1
+          fi
+          scripts/release_notes.sh "$version" > "$RUNNER_TEMP/release-notes.md"
 
       - name: Select the newest Xcode
         run: |
@@ -28,15 +46,7 @@ jobs:
       - name: Install Homebrew dependencies
         run: brew install cmake protobuf miniupnpc libevent json-c opus openssl@3
 
-      - name: Restore libchiaki build
-        id: chiaki-cache
-        uses: actions/cache@v6
-        with:
-          path: build/chiaki-dist
-          key: chiaki-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build_chiaki.sh', 'scripts/patches/**') }}
-
       - name: Build libchiaki
-        if: steps.chiaki-cache.outputs.cache-hit != 'true'
         run: scripts/build_chiaki.sh
 
       - name: Test
@@ -45,23 +55,49 @@ jobs:
       - name: Build release zip
         run: scripts/release.sh
 
-      - name: Attest build provenance
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/attest-build-provenance@v2
+      - name: Package corresponding source
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        run: |
+          scripts/release_source.py "${GITHUB_REF_NAME#v}"
+          cp "$RUNNER_TEMP/release-notes.md" dist/
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          subject-path: dist/Framelift-*-macOS-arm64.zip
+          name: Framelift-release
+          path: |
+            dist/Framelift-*-macOS-arm64.zip
+            dist/Framelift-*-macOS-arm64.zip.sha256
+            dist/Framelift-*-source.tar.gz
+            dist/release-notes.md
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: Framelift-release
+          path: dist
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            dist/Framelift-*-macOS-arm64.zip
+            dist/Framelift-*-source.tar.gz
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/Framelift-*-macOS-arm64.zip dist/Framelift-*-macOS-arm64.zip.sha256 \
-            --title "Framelift ${GITHUB_REF_NAME#v}" --notes-file .github/RELEASE_NOTES.md --generate-notes
-
-      - name: Keep the build (manual runs)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: Framelift-macOS-arm64
-          path: dist/Framelift-*-macOS-arm64.zip*
+          gh release create "$GITHUB_REF_NAME" \
+            dist/Framelift-*-macOS-arm64.zip dist/Framelift-*-macOS-arm64.zip.sha256 \
+            dist/Framelift-*-source.tar.gz --verify-tag --title "Framelift ${GITHUB_REF_NAME#v}" \
+            --notes-file dist/release-notes.md
