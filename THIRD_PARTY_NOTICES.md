@@ -1,6 +1,6 @@
 # Third-party notices
 
-Framelift as a whole is licensed under AGPL-3.0-only ([LICENSE](LICENSE)). This file lists the code it ports, links or follows, with upstream sources and licenses. License texts are in [licenses/](licenses/).
+Framelift as a whole is licensed under AGPL-3.0-only ([LICENSE](LICENSE)). This file lists its third-party code and assets, with upstream sources and licenses. License texts are in [licenses/](licenses/).
 
 ## Ported or adapted source code
 
@@ -11,6 +11,12 @@ Framelift first shipped its ports and modifications on November 23, 2026. Releas
 | Veyra | https://github.com/Likely7/Veyra-NRVideo | GPL-3.0-only ([license](licenses/GPL-3.0-Veyra.txt)) | C++ Remote Play core, trigger filter, scene-cut shader, and chiaki-ng video-metadata patch. |
 | PushFPS | https://github.com/DosukaSOL/PushFPS | GPL-3.0-or-later. Copyright (C) 2026 DosukaSOL and the PushFPS contributors. | Controller queue, reconnect waits, receive-buffer sizing, controller selection, and frame-pacing ideas. PushFPS is a modified version of Veyra. |
 | P5M | https://github.com/beecrepaldi-afk/P5M | AGPL-3.0. The chiaki-ng patches use AGPL-3.0-only with the OpenSSL exception. | Takion transport patches and DualSense output layouts, report sequencing, and haptics pump constants. |
+
+## Controller pairing models
+
+- **PS5 Controller** by Taohid Animation, [original model](https://sketchfab.com/3d-models/ps5-controller-b7bb9c5102a04cb0b1966c6d02bad7d6), under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Framelift uses the [StonedModder adaptation](https://github.com/StonedModder/dualsense-controller/blob/f9ab38fb25d3ce5bce6f6404c5ab51f9a4ae1eac/controller/ATTRIBUTION.md), with monochrome materials.
+
+[scripts/build_pairing_model.py](scripts/build_pairing_model.py) exports the model to USDZ.
 
 ## Linked libraries
 
