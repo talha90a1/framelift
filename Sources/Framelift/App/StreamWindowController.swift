@@ -10,11 +10,9 @@ protocol StreamWindowDelegate: AnyObject {
     func streamWindowToggledOverlay(_ visible: Bool)
     /// Cmd+Shift+L: arm/disarm the latency probe (the user presses Options).
     func streamWindowToggledLatencyProbe()
-    /// Keyboard/mouse fallback; return true when consumed.
-    func streamWindowForward(_ event: NSEvent) -> Bool
 }
 
-/// Borderless/fullscreen windows refuse key status by default; the stream needs keyboard input.
+/// Fullscreen windows need key status for shortcuts.
 private final class StreamWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -27,6 +25,10 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     weak var delegate: StreamWindowDelegate?
 
     private let window: StreamWindow
+    private weak var loginParent: NSWindow?
+    private weak var loginPrompt: NSWindow?
+    private weak var loginPromptParent: NSWindow?
+    private(set) var hasShown = false
     private let wantsFullscreen: Bool
     private var overlayOn: Bool
     private var eventMonitor: Any?
@@ -37,7 +39,8 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     /// Debug logs on: the latency probe (Cmd+Shift+L) is available.
     private let debugTools: Bool
 
-    init(settings: StreamSettings, title: String, debugTools: Bool) {
+    init(settings: StreamSettings, title: String, debugTools: Bool, loginParent: NSWindow?) {
+        self.loginParent = loginParent
         let screen = settings.targetDisplayID.flatMap(DisplayCatalog.screen(for:)) ?? NSScreen.main ?? NSScreen.screens[0]
         targetScreen = screen
         wantsFullscreen = settings.fullscreen
@@ -65,7 +68,6 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         window.backgroundColor = .black
         window.collectionBehavior = [.fullScreenPrimary, .managed]
         window.contentAspectRatio = NSSize(width: 16, height: 9)
-        window.acceptsMouseMovedEvents = true
         window.tabbingMode = .disallowed
         window.delegate = self
 
@@ -80,9 +82,11 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     }
 
     /// The screen the stream is actually on (may differ from the request if AppKit moved the window).
-    var screen: NSScreen? { window.screen }
+    var screen: NSScreen { window.screen ?? targetScreen }
 
     func show() {
+        guard !hasShown, !closingProgrammatically else { return }
+        hasShown = true
         // Fullscreen happens on whichever screen holds the window, so make sure it's the target first.
         if window.screen != targetScreen {
             let frame = window.frame
@@ -101,6 +105,7 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     func close() {
         guard !closingProgrammatically else { return }
         closingProgrammatically = true
+        dismissLoginPrompt()
         teardownInput()
         guard window.styleMask.contains(.fullScreen) else { return finishClose() }
         // Leave fullscreen first so the Space animates away instead of leaving an empty black Space.
@@ -134,35 +139,49 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         cursorHidden = false
     }
 
-    // MARK: Modal prompts on the stream window
+    // MARK: Login prompt
 
     /// The PSN login passcode (4 digits) the console asks for when the user has one set.
     func promptForLoginPin(completion: @escaping (String?) -> Void) {
+        guard loginPrompt == nil, !closingProgrammatically else { return }
+        let parent =
+            hasShown
+            ? window
+            : (loginParent ?? NSApp.mainWindow ?? NSApp.windows.first { $0 !== window && $0.isVisible && $0.canBecomeKey })
+        guard let parent else {
+            completion(nil)
+            return
+        }
         showCursor()
         let alert = NSAlert()
-        alert.messageText = "PlayStation login passcode"
-        alert.informativeText = "Enter the 4-digit passcode of the PS5 user you are signing in as."
+        alert.messageText = "PS5 Login Passcode"
+        alert.informativeText = "Enter your PS5 user’s four-digit passcode."
         let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
         alert.accessoryView = field
         alert.addButton(withTitle: "Sign In")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
-        alert.beginSheetModal(for: window) { [weak self] response in
-            self?.hideCursor()
+        loginPrompt = alert.window
+        loginPromptParent = parent
+        if !parent.isVisible { parent.makeKeyAndOrderFront(nil) }
+        alert.beginSheetModal(for: parent) { [weak self] response in
+            self?.loginPrompt = nil
+            self?.loginPromptParent = nil
+            if let self, self.hasShown, !self.closingProgrammatically { self.hideCursor() }
             completion(response == .alertFirstButtonReturn ? field.stringValue : nil)
         }
+    }
+
+    func dismissLoginPrompt() {
+        guard let prompt = loginPrompt, let parent = loginPromptParent else { return }
+        parent.endSheet(prompt, returnCode: .cancel)
     }
 
     // MARK: Private
 
     private func installEventMonitor() {
         guard eventMonitor == nil else { return }
-        let mask: NSEvent.EventTypeMask = [
-            .keyDown, .keyUp, .flagsChanged,
-            .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp,
-            .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel,
-        ]
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.window, self.window.attachedSheet == nil else { return event }
             return self.route(event)
         }
@@ -170,37 +189,30 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
 
     private func route(_ event: NSEvent) -> NSEvent? {
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if event.type == .keyDown {
-            let key = event.charactersIgnoringModifiers?.lowercased()
-            // Esc (keyCode 53) with no modifiers leaves the stream.
-            if event.keyCode == 53, mods.subtracting([.function, .numericPad]).isEmpty {
-                delegate?.streamWindowRequestedLeave()
-                return nil
-            }
-            // Cmd+Shift+Q is also the system Log Out shortcut; the local monitor sees it first while
-            // the stream window is key, so swallowing it here keeps a stray press from logging out.
-            if key == "q", mods == [.command, .shift] {
-                delegate?.streamWindowRequestedLeave()
-                return nil
-            }
-            if key == "o", mods == [.command, .shift] {
-                overlayOn.toggle()
-                delegate?.streamWindowToggledOverlay(overlayOn)
-                return nil
-            }
-            if event.keyCode == 37, mods == [.command, .shift] { // L, swallowed without debug logs
-                guard debugTools else { return nil }
-                delegate?.streamWindowToggledLatencyProbe()
-                if !overlayOn {
-                    overlayOn = true // the probe reports in the overlay
-                    delegate?.streamWindowToggledOverlay(true)
-                }
-                return nil
-            }
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        if event.keyCode == 53, mods.subtracting([.function, .numericPad]).isEmpty {
+            delegate?.streamWindowRequestedLeave()
+            return nil
         }
-        // Command shortcuts (Cmd+Q, Ctrl+Cmd+F, ...) keep their normal meaning and are not sent to the PS5.
-        if mods.contains(.command) { return event }
-        if delegate?.streamWindowForward(event) == true { return nil }
+        // Intercept the system Log Out shortcut while streaming.
+        if key == "q", mods == [.command, .shift] {
+            delegate?.streamWindowRequestedLeave()
+            return nil
+        }
+        if key == "o", mods == [.command, .shift] {
+            overlayOn.toggle()
+            delegate?.streamWindowToggledOverlay(overlayOn)
+            return nil
+        }
+        if event.keyCode == 37, mods == [.command, .shift] {  // L, swallowed without debug logs
+            guard debugTools else { return nil }
+            delegate?.streamWindowToggledLatencyProbe()
+            if !overlayOn {
+                overlayOn = true  // the probe reports in the overlay
+                delegate?.streamWindowToggledOverlay(true)
+            }
+            return nil
+        }
         return event
     }
 

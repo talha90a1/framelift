@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Picks the YCbCr->RGB matrix, range expansion and CAMetalLayer colourspace from the stream's
 // colour tags. The shader outputs gamma-encoded code values; the layer colourspace decodes them.
+// HDR code values go to a 10-bit EDR layer tagged with the corresponding BT.2100 transfer function.
 // SDR 709 uses sRGB (~2.2), not CGColorSpace.itur_709, whose inverse camera OETF lifts shadows.
 // Missing or unknown tags: BT.709 matrix, video range, sRGB (what the PS5 sends in SDR).
 import CoreGraphics
@@ -36,41 +37,28 @@ struct ColourTags: Equatable, Sendable {
 
     static let untagged = ColourTags(matrix: nil, primaries: nil, transfer: nil, fullRange: false)
 
+    var hdrCurve: LayerCurve? {
+        if transfer == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String { return .pq }
+        if transfer == kCVImageBufferTransferFunction_ITU_R_2100_HLG as String { return .hlg }
+        return nil
+    }
+
     static func read(_ buffer: CVPixelBuffer) -> ColourTags {
         func tag(_ key: CFString) -> String? {
             CVBufferCopyAttachment(buffer, key, nil) as? String
         }
         let format = CVPixelBufferGetPixelFormatType(buffer)
-        return ColourTags(matrix: tag(kCVImageBufferYCbCrMatrixKey),
-                          primaries: tag(kCVImageBufferColorPrimariesKey),
-                          transfer: tag(kCVImageBufferTransferFunctionKey),
-                          fullRange: format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-                              || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange)
+        return ColourTags(
+            matrix: tag(kCVImageBufferYCbCrMatrixKey),
+            primaries: tag(kCVImageBufferColorPrimariesKey),
+            transfer: tag(kCVImageBufferTransferFunctionKey),
+            fullRange: format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange)
     }
 
     var summary: String {
         "matrix=\(matrix ?? "none") primaries=\(primaries ?? "none") transfer=\(transfer ?? "none") range=\(fullRange ? "full" : "video")"
     }
-}
-
-/// Tags of the stream being decoded, published by the decoder once per format change and read by the
-/// presenter. Interpolated frames carry no attachments (and are always labelled 420v), so they must
-/// not be classified on their own: every present uses the stream's tags.
-final class StreamColour: @unchecked Sendable {
-    static let shared = StreamColour()
-    private let lock = NSLock()
-    private var tags = ColourTags.untagged
-    private var generation: UInt64 = 0
-
-    func publish(_ new: ColourTags) {
-        lock.withLock {
-            guard new != tags else { return }
-            tags = new
-            generation &+= 1
-        }
-    }
-
-    var snapshot: (tags: ColourTags, generation: UInt64) { lock.withLock { (tags, generation) } }
 }
 
 enum YCbCrMatrix: String, Sendable {
@@ -98,6 +86,9 @@ enum LayerCurve: String, Sendable {
     case gamma24 = "gamma 2.4"
     /// Inverse BT.709 camera OETF (CGColorSpace.itur_709 / itur_2020).
     case camera709 = "709 camera"
+    /// HDR10 (SMPTE ST 2084).
+    case pq = "PQ"
+    case hlg = "HLG"
 }
 
 struct LayerColourSpace: Equatable, Sendable {
@@ -105,6 +96,8 @@ struct LayerColourSpace: Equatable, Sendable {
     var curve: LayerCurve
 
     static let sRGB = LayerColourSpace(primaries: .bt709, curve: .sRGB)
+
+    var isHDR: Bool { curve == .pq || curve == .hlg }
 
     var summary: String { "\(primaries.rawValue) primaries, \(curve.rawValue)" }
 
@@ -116,6 +109,8 @@ struct LayerColourSpace: Equatable, Sendable {
         case (.bt2020, .sRGB): return CGColorSpace(name: CGColorSpace.itur_2020_sRGBGamma)
         case (.bt2020, .camera709): return CGColorSpace(name: CGColorSpace.itur_2020)
         case (_, .gamma24): return Self.calibrated(primaries, gamma: 2.4)
+        case (_, .pq): return CGColorSpace(name: CGColorSpace.itur_2100_PQ)
+        case (_, .hlg): return CGColorSpace(name: CGColorSpace.itur_2100_HLG)
         }
     }
 
@@ -151,8 +146,6 @@ struct ColourMapping: Equatable, Sendable {
     var matrix: YCbCrMatrix
     var fullRange: Bool
     var layer: LayerColourSpace
-    /// The stream is PQ/HLG: unsupported, shown with the SDR mapping.
-    var hdrFallback = false
     /// Matrix tag absent or unrecognised (BT.709 assumed).
     var matrixAssumed = false
 
@@ -170,7 +163,6 @@ struct ColourMapping: Equatable, Sendable {
         kCVImageBufferColorPrimaries_P3_D65 as String: .p3,
         kCVImageBufferColorPrimaries_DCI_P3 as String: .p3,
     ]
-
     static func decide(_ tags: ColourTags, mode: ColourMode) -> ColourMapping {
         var m = ColourMapping.standard
         m.fullRange = tags.fullRange
@@ -179,18 +171,21 @@ struct ColourMapping: Equatable, Sendable {
         } else {
             m.matrixAssumed = true
         }
+        if let hdr = tags.hdrCurve {
+            m.layer = LayerColourSpace(primaries: .bt2020, curve: hdr)
+            return m
+        }
+
         // 601 primaries (EBU 3213 / SMPTE C) are close enough to 709 that the sRGB tag is the safer pick.
         let primaries = tags.primaries.flatMap { Self.wideGamut[$0] } ?? .bt709
-        m.hdrFallback = tags.transfer == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String
-            || tags.transfer == kCVImageBufferTransferFunction_ITU_R_2100_HLG as String
-
-        // The stream's primaries are always kept; the mode only picks the curve.
-        let curve: LayerCurve = switch mode {
-        // Automatic: always an SDR display-referred decode (sRGB curve).
-        case .automatic, .sRGB: .sRGB
-        case .bt1886: .gamma24
-        case .legacy709: .camera709
-        }
+        // The stream's primaries are always kept; the mode only picks the SDR curve.
+        let curve: LayerCurve =
+            switch mode {
+            // Automatic: always an SDR display-referred decode (sRGB curve).
+            case .automatic, .sRGB: .sRGB
+            case .bt1886: .gamma24
+            case .legacy709: .camera709
+            }
         m.layer = LayerColourSpace(primaries: primaries, curve: curve)
         return m
     }
@@ -206,17 +201,16 @@ struct ColourMapping: Equatable, Sendable {
         let bits = tenBit ? 10.0 : 8.0
         let toCode = tenBit ? 65535.0 / 64.0 : 255.0
         let step = pow(2, bits - 8)
-        let (yOff, yDen, cDen): (Double, Double, Double) = fullRange
-            ? (0, pow(2, bits) - 1, pow(2, bits) - 1)       // H.273 full range
-            : (16 * step, 219 * step, 224 * step)          // video range: Y 16-235, C 16-240 (8-bit)
+        let (yOff, yDen, cDen): (Double, Double, Double) =
+            fullRange
+            ? (0, pow(2, bits) - 1, pow(2, bits) - 1)  // H.273 full range
+            : (16 * step, 219 * step, 224 * step)  // video range: Y 16-235, C 16-240 (8-bit)
         let cOff = 128 * step
         let range = SIMD4<Float>(Float(toCode / yDen), Float(-yOff / yDen), Float(toCode / cDen), Float(-cOff / cDen))
         return PresentColourConstants(r: r, g: g, b: b, range: range)
     }
 
     var summary: String {
-        var s = "\(matrix.rawValue)\(matrixAssumed ? " (assumed)" : ""), \(fullRange ? "full" : "video") range, layer \(layer.summary)"
-        if hdrFallback { s += ", HDR transfer unsupported: SDR fallback" }
-        return s
+        "\(matrix.rawValue)\(matrixAssumed ? " (assumed)" : ""), \(fullRange ? "full" : "video") range, layer \(layer.summary)"
     }
 }

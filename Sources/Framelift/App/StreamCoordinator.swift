@@ -41,6 +41,7 @@ final class StreamCoordinator: ObservableObject {
 
     private var target: StreamTarget?
     private var settings = StreamSettings()
+    private var recorder: StreamRecorder?
     private var traceActive = false
     /// "Debug logs", sampled when the stream starts: trace files, core INFO lines, latency probes.
     private(set) var debugLogs = false
@@ -60,8 +61,9 @@ final class StreamCoordinator: ObservableObject {
     private var generation = 0
     private var retriesLeft = SessionRetryPolicy.maxRetries
     private var retryResetWork: DispatchWorkItem?
-    /// The current attempt reached `.connected`.
+    private var firstFrameTimeout: Task<Void, Never>?
     private var attemptConnected = false
+    private var attemptHasVideo = false
     /// When the last stream from this Mac ended: a PS5 "in use" soon after most likely means that session.
     private var lastStreamEnd: UInt64?
     /// A stream that stays up this long earns its automatic retries back.
@@ -83,9 +85,16 @@ final class StreamCoordinator: ObservableObject {
         debugLogs = DebugLogs.stored()
         retriesLeft = SessionRetryPolicy.maxRetries
         phase = .connecting("Connecting to \(target.title)…")
-        beginTrace()
+        let startedAt = Date()
+        beginTrace(startedAt: startedAt)
+        if VideoRecording.stored() {
+            let name = LogFolders.sessionName(label: "ps5", date: startedAt)
+            recorder = StreamRecorder(directory: VideoRecording.root.appendingPathComponent(name, isDirectory: true))
+        }
 
-        let window = StreamWindowController(settings: settings, title: target.title, debugTools: debugLogs)
+        let window = StreamWindowController(
+            settings: settings, title: target.title, debugTools: debugLogs,
+            loginParent: NSApp.keyWindow ?? NSApp.mainWindow)
         window.delegate = self
         self.window = window
         let engine = PresentationEngine(view: window.presenterView, settings: settings)
@@ -96,8 +105,6 @@ final class StreamCoordinator: ObservableObject {
         audio.start()
         self.audio = audio
 
-        beginDisplayActivity()
-        window.show()
         logEnvironment()
         startStatsTimer()
         startSource()
@@ -128,10 +135,13 @@ final class StreamCoordinator: ObservableObject {
         settings.keepStaticOverlays = newSettings.keepStaticOverlays
         settings.blendFallback = newSettings.blendFallback
         settings.sharpness = newSettings.sharpness
+        settings.upscaler = newSettings.upscaler
         engine?.update(settings: settings)
         window?.overlayVisible = newSettings.showOverlay
         engine?.showFPSCounter = newSettings.showOverlay
-        Diagnostics.shared.event("live settings sceneCutFallback=\(settings.sceneCutFallback) keepStatic=\(settings.keepStaticOverlays) blendFallback=\(settings.blendFallback) sharpness=\(settings.sharpness)")
+        Diagnostics.shared.event(
+            "live settings sceneCutFallback=\(settings.sceneCutFallback) keepStatic=\(settings.keepStaticOverlays) blendFallback=\(settings.blendFallback) sharpness=\(settings.sharpness) upscaler=\(settings.upscaler.rawValue)"
+        )
     }
 
     // MARK: Pipeline
@@ -141,6 +151,7 @@ final class StreamCoordinator: ObservableObject {
         generation += 1
         let generation = generation
         attemptConnected = false
+        attemptHasVideo = false
 
         let session = RemotePlaySession(host: console.host, credentials: credentials, settings: settings)
         session.onEvent = { [weak self] event in
@@ -160,13 +171,24 @@ final class StreamCoordinator: ObservableObject {
             frameSink = engine
         }
 
-        let decoder = VideoDecoder(sink: frameSink, onNeedKeyframe: { [weak session] in
-            Diagnostics.shared.event("keyframe requested by decoder")
-            session?.requestKeyframe()
-        })
+        let decoder = VideoDecoder(
+            sink: frameSink,
+            onNeedKeyframe: { [weak session] in
+                Diagnostics.shared.event("keyframe requested by decoder")
+                session?.requestKeyframe()
+            },
+            onFirstFrame: { [weak self] in
+                Self.onMain {
+                    guard let self, generation == self.generation, case .connecting = self.phase else { return }
+                    self.attemptHasVideo = true
+                    self.showStreamIfReady()
+                }
+            })
         let bytes = videoBytes
+        let recorder = recorder
         session.onVideo = { unit in
             bytes.add(unit.data.count)
+            recorder?.append(unit)
             decoder.decode(unit)
         }
         let audio = audio
@@ -189,24 +211,37 @@ final class StreamCoordinator: ObservableObject {
         Diagnostics.shared.event("session event \(Self.describe(event))")
         switch event {
         case .connected:
-            phase = .streaming
+            guard !attemptConnected else { return }
             attemptConnected = true
-            scheduleRetryReset()
+            if attemptHasVideo {
+                showStreamIfReady()
+            } else {
+                phase = .connecting("Waiting for video…")
+                firstFrameTimeout = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(12)) } catch { return }
+                    guard let self, generation == self.generation, case .connecting = self.phase else { return }
+                    self.teardown(
+                        alert: EndAlert(title: "No video from the PS5", message: "The PS5 connected, but no playable video arrived."),
+                        completion: nil
+                    )
+                }
+            }
         case .loginPinRequired:
             window?.promptForLoginPin { [weak self] pin in
                 guard let self, generation == self.generation, let session = self.source else { return }
                 if let pin, !pin.isEmpty { session.submitLoginPin(pin) } else { self.stop() }
             }
         case .quit(let reason, let message):
-            let recentlyEnded = lastStreamEnd.map {
-                HostClock.seconds(HostClock.now() - $0) < Self.recentEnd
-            } ?? false
+            let recentlyEnded =
+                lastStreamEnd.map {
+                    HostClock.seconds(HostClock.now() - $0) < Self.recentEnd
+                } ?? false
             let ourSessionLikely = retriesLeft < SessionRetryPolicy.maxRetries || recentlyEnded
             sessionEnded(
                 transient: SessionRetryPolicy.isTransient(quitReason: reason, ourSessionLikely: ourSessionLikely),
                 consoleHoldsSession: SessionRetryPolicy.consoleHoldsSession(quitReason: reason),
                 alert: EndAlert(
-                    title: "Stream ended",
+                    title: window?.hasShown == true ? "Stream ended" : "Connection failed",
                     message: message.isEmpty ? SessionMessages.quitMessage(reason: reason) : message
                 ),
                 generation: generation
@@ -223,6 +258,16 @@ final class StreamCoordinator: ObservableObject {
         }
     }
 
+    private func showStreamIfReady() {
+        guard attemptConnected, attemptHasVideo, let window else { return }
+        firstFrameTimeout?.cancel()
+        firstFrameTimeout = nil
+        phase = .streaming
+        beginDisplayActivity()
+        window.show()
+        scheduleRetryReset()
+    }
+
     private func sessionEnded(transient: Bool, consoleHoldsSession: Bool = false, alert: EndAlert, generation: Int) {
         guard generation == self.generation, isActive, phase != .stopping else { return }
         guard transient, retriesLeft > 0 else {
@@ -232,17 +277,21 @@ final class StreamCoordinator: ObservableObject {
         let retry = SessionRetryPolicy.maxRetries - retriesLeft + 1
         retriesLeft -= 1
         retryResetWork?.cancel()
+        firstFrameTimeout?.cancel()
+        firstFrameTimeout = nil
         let wait = SessionRetryPolicy.wait(consoleHoldsSession: consoleHoldsSession, wasPlaying: attemptConnected)
         let delay = SessionRetryPolicy.seconds(wait, retry: retry)
         let count = "\(retry)/\(SessionRetryPolicy.maxRetries)"
         Diagnostics.shared.event("transient failure, reconnecting in \(Int(delay)) s (\(wait), \(count)): \(alert.message)")
-        let status = switch wait {
-        case .start: "Connection lost, reconnecting (\(count))…"
-        case .inUse: "The PS5 is still closing the last session. Reconnecting in \(Int(delay)) s (\(count))…"
-        case .afterLive: "Connection lost. Reconnecting in \(Int(delay)) s, once the PS5 has closed the session (\(count))…"
-        }
+        let status =
+            switch wait {
+            case .start: "Retrying connection (\(count))…"
+            case .inUse: "PS5 still in use. Retrying in \(Int(delay)) s (\(count))…"
+            case .afterLive: "Connection lost. Retrying in \(Int(delay)) s (\(count))…"
+            }
         phase = .connecting(status)
-        self.generation += 1 // silence the dying session
+        self.generation += 1  // silence the dying session
+        window?.dismissLoginPrompt()
         let waiting = self.generation
         let old = source
         source = nil
@@ -276,6 +325,8 @@ final class StreamCoordinator: ObservableObject {
         generation += 1
         lastStreamEnd = HostClock.now()
         retryResetWork?.cancel()
+        firstFrameTimeout?.cancel()
+        firstFrameTimeout = nil
         input.sink = nil
         latencyProbe?.stop()
         if let hidStats = input.resetFeedback() { Diagnostics.shared.event("dualsense hid: \(hidStats)") }
@@ -288,14 +339,17 @@ final class StreamCoordinator: ObservableObject {
         let source = source
         let audio = audio
         let engine = engine
+        let recorder = recorder
         self.source = nil
         self.audio = nil
+        self.recorder = nil
         window?.close()
         window = nil
         endDisplayActivity()
 
         Self.offMain({
             source?.stop()
+            recorder?.finish()
             audio?.stop()
         }) { [weak self] in
             // The engine outlives the source so in-flight decoder output still has a sink.
@@ -313,12 +367,14 @@ final class StreamCoordinator: ObservableObject {
 
     // MARK: Diagnostics
 
-    private func beginTrace() {
+    private func beginTrace(startedAt: Date) {
         endTrace()
         Diagnostics.shared.enabled = debugLogs
         guard debugLogs else { return }
-        Diagnostics.shared.beginSession(label: "ps5", header: SystemReport.make(
-            settings: settings, controller: input.controllerName, controllerFeedback: input.feedbackSummary))
+        Diagnostics.shared.beginSession(
+            label: "ps5", date: startedAt,
+            header: SystemReport.make(
+                settings: settings, controller: input.controllerName, controllerFeedback: input.feedbackSummary))
         traceActive = true
     }
 
@@ -330,13 +386,17 @@ final class StreamCoordinator: ObservableObject {
             d.event("target ps5 \(console.nickname) host=\(console.host)")
             d.event("console link: \(SystemReport.consoleLink(host: console.host))")
         }
-        d.event("settings \(s.width)x\(s.height)@\(s.streamFPS) bitrate=\(s.bitrateKbps)kbps codec=\(s.codec.label) fullscreen=\(s.fullscreen) sceneCutFallback=\(s.sceneCutFallback) sharpness=\(s.sharpness)")
-        d.event("frame generation keepWarm=\(s.keepLLFIWarm) keepStatic=\(s.keepStaticOverlays) blendFallback=\(s.blendFallback) buffers=\(DisplayBuffering.stored().drawableCount)")
+        d.event(
+            "settings \(s.width)x\(s.height)@\(s.streamFPS) bitrate=\(s.bitrateKbps)kbps codec=\(s.codec.label) fullscreen=\(s.fullscreen) sceneCutFallback=\(s.sceneCutFallback) sharpness=\(s.sharpness)"
+        )
+        d.event(
+            "frame generation keepWarm=\(s.keepLLFIWarm) keepStatic=\(s.keepStaticOverlays) blendFallback=\(s.blendFallback) buffers=\(DisplayBuffering.stored().drawableCount)"
+        )
         if let screen = window?.screen {
             d.event("display \(screen.localizedName) \(DisplayInfo.hzText(Double(screen.maximumFramesPerSecond))) Hz frame=\(screen.frame)")
         }
         d.event("audio output \(Self.defaultOutputDeviceName() ?? "unknown")")
-        d.event("controller \(input.controllerName ?? "none (keyboard fallback)")")
+        d.event("controller \(input.controllerName ?? "none")")
         d.event("controller feedback \(input.feedbackSummary) (setting: \(DualSenseFeedbackMode.stored().title))")
     }
 
@@ -360,11 +420,12 @@ final class StreamCoordinator: ObservableObject {
         let stats = session.stats
         Telemetry.shared.update { $0.packetsLost = stats.packets_lost }
         noteLoss(received: stats.packets_received, lost: stats.packets_lost, now: now)
-        Diagnostics.shared.event(String(
-            format: "session stats connected=%d kbps=%.0f target_kbps=%lld received=%llu lost=%llu idr=%llu warnings=%llu errors=%llu",
-            stats.connected ? 1 : 0, kbps, stats.server_target_bitrate, stats.packets_received, stats.packets_lost,
-            stats.idr_requests, stats.warnings, stats.errors
-        ))
+        Diagnostics.shared.event(
+            String(
+                format: "session stats connected=%d kbps=%.0f target_kbps=%lld received=%llu lost=%llu idr=%llu warnings=%llu errors=%llu",
+                stats.connected ? 1 : 0, kbps, stats.server_target_bitrate, stats.packets_received, stats.packets_lost,
+                stats.idr_requests, stats.warnings, stats.errors
+            ))
     }
 
     /// Three lossy seconds out of the last five shows a short notice, at most once a minute.
@@ -373,7 +434,8 @@ final class StreamCoordinator: ObservableObject {
         lossySeconds.append(total > 50 && Double(lost) / Double(total) > 0.03)
         if lossySeconds.count > 5 { lossySeconds.removeFirst() }
         guard lossySeconds.filter({ $0 }).count >= 3,
-              lastWeakNotice == 0 || HostClock.seconds(now - lastWeakNotice) > 60 else { return }
+            lastWeakNotice == 0 || HostClock.seconds(now - lastWeakNotice) > 60
+        else { return }
         lastWeakNotice = now
         lossySeconds.removeAll()
         Diagnostics.shared.event("weak connection notice")
@@ -454,14 +516,10 @@ extension StreamCoordinator: StreamWindowDelegate {
     }
 
     func streamWindowToggledLatencyProbe() {
-        guard let latencyProbe else { return } // only with debug logs on
+        guard let latencyProbe else { return }  // only with debug logs on
         latencyProbe.toggle()
     }
 
-    func streamWindowForward(_ event: NSEvent) -> Bool {
-        guard source != nil else { return false }
-        return input.handle(event: event)
-    }
 }
 
 private struct UncheckedSendable<Value>: @unchecked Sendable {

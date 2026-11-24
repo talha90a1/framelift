@@ -1,8 +1,6 @@
 # Contributing to Framelift
 
-Thanks for your interest. Bug reports, fixes and measurements on different Macs and displays are all welcome.
-
-Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report security problems privately as described in [SECURITY.md](SECURITY.md), not in a public issue.
+Follow the [Code of Conduct](CODE_OF_CONDUCT.md). Use the [security policy](SECURITY.md) to report vulnerabilities privately.
 
 ## Development setup
 
@@ -57,25 +55,25 @@ scripts/gen_inline_shaders.sh
 
 Commit the `.metal` change and the regenerated `ShaderSources.swift` together. Do not edit `ShaderSources.swift` by hand.
 
-## Continuous integration
+## CI and releases
 
-`.github/workflows/ci.yml` builds libchiaki, the app and the tests on every push and pull request to `main`. It uses the newest Xcode on GitHub's `macos-latest` Apple Silicon runner. The project is developed with the macOS 27 SDK, so CI is only reliable on a runner whose Xcode has that SDK; if GitHub's image is older and the build fails for that reason, use a newer image or a self-hosted runner. Until then, run the build and `swift test` locally and say so in your pull request.
+Pull requests to `main` build and run Swift tests on an Apple Silicon runner. Swift formatting is advisory. Docs-only pushes to `main` skip the build.
 
-- Pushes and pull requests that only touch docs (Markdown, `docs/`, licenses, issue templates) skip the build.
-- Pull requests also get an advisory `swift-format` check of the Swift files they change (config in `.swift-format`). It adds warnings to the PR but does not fail it.
-- Pushing a `v*` tag builds the release zip, records build provenance (`gh attestation verify`), and publishes the release with generated notes.
-- Add `[skip ci]` to a commit message for trivial changes that need no build.
+To release, set the app version in `Resources/Info.plist`, date the matching section in `CHANGELOG.md`, and tag a commit on `main` as `vMAJOR.MINOR.PATCH`. GitHub Actions builds and tests the app, publishes its ZIP and corresponding source, and attests both downloads. Manual runs keep the build as an Actions artifact.
+
+The source archive includes the pinned chiaki-ng and Sparkle sources and the upstream archives and formulae for the Homebrew libraries shipped in that release. `SOURCE_REVISIONS.txt` lists the versions. The normal build uses Homebrew binaries. To reproduce the dependency versions, use the included recipes and source archives.
+
+For GitHub maintainers, protect `main` with pull requests and the `build-and-test` check. Restrict force pushes and deletion. Enable private vulnerability reporting, Dependabot alerts and security updates, secret scanning and push protection, and immutable releases.
 
 ## Coding style
 
 - Swift: follow the [Swift API Design Guidelines](https://www.swift.org/documentation/api-design-guidelines/). Four spaces, no tabs.
 - C and C++: match the surrounding file. Four spaces, no tabs, C++20.
 - `.editorconfig` sets indentation and line endings. Use an editor that reads it.
-- Every source file starts with an SPDX line, followed by a one or two line summary of the file:
+- Start new source files with an SPDX line:
 
   ```swift
   // SPDX-License-Identifier: AGPL-3.0-only
-  // What this file does, in one or two lines.
   ```
 
   New files use `AGPL-3.0-only`. Files ported from another project keep their original SPDX line and copyright notice, and name the source and commit.

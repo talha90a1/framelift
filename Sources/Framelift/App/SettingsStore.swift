@@ -15,9 +15,11 @@ enum StreamPreset: String, CaseIterable, Identifiable {
     private var is1080: Bool { self == .p1080fps30 || self == .p1080fps60 }
 
     init?(settings: StreamSettings) {
-        guard let match = Self.allCases.first(where: {
-            $0.width == settings.width && $0.height == settings.height && $0.fps == settings.streamFPS
-        }) else { return nil }
+        guard
+            let match = Self.allCases.first(where: {
+                $0.width == settings.width && $0.height == settings.height && $0.fps == settings.streamFPS
+            })
+        else { return nil }
         self = match
     }
 
@@ -37,6 +39,7 @@ enum StreamSettingsLimits {
 /// Loads and saves `StreamSettings` as JSON in UserDefaults. Unknown or corrupt data falls back to defaults.
 struct SettingsStore {
     static let key = "framelift.streamSettings.v1"
+    private static let motionDefaultsKey = "framelift.motionDefaults.v1"
     let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -45,26 +48,31 @@ struct SettingsStore {
 
     func load() -> StreamSettings {
         guard let data = defaults.data(forKey: Self.key),
-              let decoded = try? JSONDecoder().decode(StreamSettings.self, from: data)
+            var decoded = try? JSONDecoder().decode(StreamSettings.self, from: data)
         else { return StreamSettings() }
+        if !defaults.bool(forKey: Self.motionDefaultsKey) {
+            decoded.keepStaticOverlays = false
+            decoded.blendFallback = false
+            save(decoded)
+        }
         return Self.sanitized(decoded)
     }
 
     func save(_ settings: StreamSettings) {
         guard let data = try? JSONEncoder().encode(Self.sanitized(settings)) else { return }
         defaults.set(data, forKey: Self.key)
+        defaults.set(true, forKey: Self.motionDefaultsKey)
     }
 
-
-    /// Clamps stored values to what the app offers: a PS5 preset, 8-bit H.264/HEVC, and a frame-generation backend.
+    /// Clamps stored values to what the app offers: a PS5 preset, a bitrate and a sharpness in range.
     static func sanitized(_ settings: StreamSettings) -> StreamSettings {
         var result = settings
         if StreamPreset(settings: result) == nil { StreamPreset.p1080fps30.apply(to: &result) }
-        if result.codec == .hevcHDR { result.codec = .hevc }
         let range = StreamSettingsLimits.bitrateRangeKbps
         result.bitrateKbps = min(max(result.bitrateKbps, range.lowerBound), range.upperBound)
         let sharp = StreamSettingsLimits.sharpnessRange
-        result.sharpness = result.sharpness.isFinite
+        result.sharpness =
+            result.sharpness.isFinite
             ? min(max(result.sharpness, sharp.lowerBound), sharp.upperBound) : StreamSettingsLimits.defaultSharpness
         return result
     }

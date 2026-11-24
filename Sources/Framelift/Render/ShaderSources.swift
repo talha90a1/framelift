@@ -2,271 +2,290 @@
 // Inline fallback used when the bundled Shaders resource folder cannot be found.
 enum InlineShaderSources {
     static let files: [(name: String, source: String)] = [
-        ("Blend.metal", #"""
-// SPDX-License-Identifier: AGPL-3.0-only
-// Last-resort generated frame: motion-free 50/50 blend of A and B (~0.1 ms at 1080p).
-// Inputs may be 8- or 10-bit planes (normalised reads); output is an 8-bit 420v surface.
-#include <metal_stdlib>
-using namespace metal;
+        (
+            "Blend.metal",
+            #"""
+            // SPDX-License-Identifier: AGPL-3.0-only
+            // Last-resort generated frame: motion-free 50/50 blend of A and B (~0.1 ms at 1080p).
+            // Inputs may be 8- or 10-bit planes (normalised reads); output is an 8-bit 420v surface.
+            #include <metal_stdlib>
+            using namespace metal;
 
-kernel void blend_frames(texture2d<float> lumaA [[texture(0)]],
-                         texture2d<float> lumaB [[texture(1)]],
-                         texture2d<float> chromaA [[texture(2)]],
-                         texture2d<float> chromaB [[texture(3)]],
-                         texture2d<float, access::write> lumaOut [[texture(5)]],
-                         texture2d<float, access::write> chromaOut [[texture(6)]],
-                         uint2 gid [[thread_position_in_grid]])
-{
-    if (gid.x >= chromaOut.get_width() || gid.y >= chromaOut.get_height()) return;
-    for (uint k = 0; k < 4; ++k) {
-        const uint2 at = gid * 2 + uint2(k & 1, k >> 1);
-        if (at.x >= lumaOut.get_width() || at.y >= lumaOut.get_height()) continue;
-        lumaOut.write(float4(0.5 * (lumaA.read(at).r + lumaB.read(at).r)), at);
-    }
-    chromaOut.write(float4(0.5 * (chromaA.read(gid).rg + chromaB.read(gid).rg), 0.0, 1.0), gid);
-}
+            kernel void blend_frames(texture2d<float> lumaA [[texture(0)]],
+                                     texture2d<float> lumaB [[texture(1)]],
+                                     texture2d<float> chromaA [[texture(2)]],
+                                     texture2d<float> chromaB [[texture(3)]],
+                                     texture2d<float, access::write> lumaOut [[texture(5)]],
+                                     texture2d<float, access::write> chromaOut [[texture(6)]],
+                                     uint2 gid [[thread_position_in_grid]])
+            {
+                if (gid.x >= chromaOut.get_width() || gid.y >= chromaOut.get_height()) return;
+                for (uint k = 0; k < 4; ++k) {
+                    const uint2 at = gid * 2 + uint2(k & 1, k >> 1);
+                    if (at.x >= lumaOut.get_width() || at.y >= lumaOut.get_height()) continue;
+                    lumaOut.write(float4(0.5 * (lumaA.read(at).r + lumaB.read(at).r)), at);
+                }
+                chromaOut.write(float4(0.5 * (chromaA.read(gid).rg + chromaB.read(gid).rg), 0.0, 1.0), gid);
+            }
 
-// Static-overlay guard for Apple's generated frame: subtitles, HUD and prompts that do not move
-// between the two real frames are copied from them, so the model cannot drag them with the
-// background behind. Applies only where a pixel is unchanged in A and B and sits in local
-// contrast (text and UI edges); moving or flat areas keep the generated pixel.
-constant float kStaticLo = 5.0 / 255.0;
-constant float kStaticHi = 14.0 / 255.0;
-constant float kEdgeLo = 0.10;
-constant float kEdgeHi = 0.20;
+            // Static-overlay guard for Apple's generated frame: subtitles, HUD and prompts that do not move
+            // between the two real frames are copied from them, so the model cannot drag them with the
+            // background behind. Applies only where a pixel is unchanged in A and B and sits in local
+            // contrast (text and UI edges); moving or flat areas keep the generated pixel.
+            constant float kStaticLo = 5.0 / 255.0;
+            constant float kStaticHi = 14.0 / 255.0;
+            constant float kEdgeLo = 0.10;
+            constant float kEdgeHi = 0.20;
 
-kernel void keep_static(texture2d<float> lumaA [[texture(0)]],
-                        texture2d<float> lumaB [[texture(1)]],
-                        texture2d<float> chromaA [[texture(2)]],
-                        texture2d<float> chromaB [[texture(3)]],
-                        texture2d<float> lumaG [[texture(4)]],
-                        texture2d<float, access::write> lumaOut [[texture(5)]],
-                        texture2d<float, access::write> chromaOut [[texture(6)]],
-                        texture2d<float> chromaG [[texture(7)]],
-                        uint2 gid [[thread_position_in_grid]])
-{
-    if (gid.x >= chromaOut.get_width() || gid.y >= chromaOut.get_height()) return;
-    const int2 lmax = int2(lumaB.get_width() - 1, lumaB.get_height() - 1);
-    // Local contrast of B over the 4x4 luma block around this chroma site.
-    float lo = 1.0, hi = 0.0;
-    for (int dy = -1; dy <= 2; ++dy) {
-        for (int dx = -1; dx <= 2; ++dx) {
-            const uint2 p = uint2(clamp(int2(gid * 2) + int2(dx, dy), int2(0), lmax));
-            const float v = lumaB.read(p).r;
-            lo = min(lo, v); hi = max(hi, v);
-        }
-    }
-    const float edge = smoothstep(kEdgeLo, kEdgeHi, hi - lo);
-    const float2 ca = chromaA.read(gid).rg, cb = chromaB.read(gid).rg;
-    const float cdiff = max(abs(ca.x - cb.x), abs(ca.y - cb.y));
-    float wsum = 0.0;
-    for (uint k = 0; k < 4; ++k) {
-        const uint2 at = gid * 2 + uint2(k & 1, k >> 1);
-        if (at.x >= lumaOut.get_width() || at.y >= lumaOut.get_height()) continue;
-        const float a = lumaA.read(at).r, b = lumaB.read(at).r;
-        const float w = edge * (1.0 - smoothstep(kStaticLo, kStaticHi, max(abs(a - b), cdiff)));
-        wsum += w;
-        lumaOut.write(float4(mix(lumaG.read(at).r, 0.5 * (a + b), w)), at);
-    }
-    chromaOut.write(float4(mix(chromaG.read(gid).rg, 0.5 * (ca + cb), 0.25 * wsum), 0.0, 1.0), gid);
-}
-"""#),
-        ("Present.metal", #"""
-// SPDX-License-Identifier: AGPL-3.0-only
-// Bi-planar 4:2:0 (8/10-bit) -> gamma-encoded R'G'B' for the CAMetalLayer drawable; matrix and range
-// come from the stream's tags (ColourPipeline.swift). Letterboxing is done with the viewport.
-#include <metal_stdlib>
-using namespace metal;
+            kernel void keep_static(texture2d<float> lumaA [[texture(0)]],
+                                    texture2d<float> lumaB [[texture(1)]],
+                                    texture2d<float> chromaA [[texture(2)]],
+                                    texture2d<float> chromaB [[texture(3)]],
+                                    texture2d<float> lumaG [[texture(4)]],
+                                    texture2d<float, access::write> lumaOut [[texture(5)]],
+                                    texture2d<float, access::write> chromaOut [[texture(6)]],
+                                    texture2d<float> chromaG [[texture(7)]],
+                                    uint2 gid [[thread_position_in_grid]])
+            {
+                if (gid.x >= chromaOut.get_width() || gid.y >= chromaOut.get_height()) return;
+                const int2 lmax = int2(lumaB.get_width() - 1, lumaB.get_height() - 1);
+                // Local contrast of B over the 4x4 luma block around this chroma site.
+                float lo = 1.0, hi = 0.0;
+                for (int dy = -1; dy <= 2; ++dy) {
+                    for (int dx = -1; dx <= 2; ++dx) {
+                        const uint2 p = uint2(clamp(int2(gid * 2) + int2(dx, dy), int2(0), lmax));
+                        const float v = lumaB.read(p).r;
+                        lo = min(lo, v); hi = max(hi, v);
+                    }
+                }
+                const float edge = smoothstep(kEdgeLo, kEdgeHi, hi - lo);
+                const float2 ca = chromaA.read(gid).rg, cb = chromaB.read(gid).rg;
+                const float cdiff = max(abs(ca.x - cb.x), abs(ca.y - cb.y));
+                float wsum = 0.0;
+                for (uint k = 0; k < 4; ++k) {
+                    const uint2 at = gid * 2 + uint2(k & 1, k >> 1);
+                    if (at.x >= lumaOut.get_width() || at.y >= lumaOut.get_height()) continue;
+                    const float a = lumaA.read(at).r, b = lumaB.read(at).r;
+                    const float w = edge * (1.0 - smoothstep(kStaticLo, kStaticHi, max(abs(a - b), cdiff)));
+                    wsum += w;
+                    lumaOut.write(float4(mix(lumaG.read(at).r, 0.5 * (a + b), w)), at);
+                }
+                chromaOut.write(float4(mix(chromaG.read(gid).rg, 0.5 * (ca + cb), 0.25 * wsum), 0.0, 1.0), gid);
+            }
+            """#
+        ),
+        (
+            "Present.metal",
+            #"""
+            // SPDX-License-Identifier: AGPL-3.0-only
+            // Bi-planar 4:2:0 (8/10-bit) -> gamma-encoded R'G'B' for the CAMetalLayer drawable; matrix and range
+            // come from the stream's tags (ColourPipeline.swift). Letterboxing is done with the viewport.
+            #include <metal_stdlib>
+            using namespace metal;
 
-struct PresentVertexOut {
-    float4 position [[position]];
-    float2 uv;
-};
+            struct PresentVertexOut {
+                float4 position [[position]];
+                float2 uv;
+            };
 
-// ColourMapping.constants (PresentColourConstants in Swift): 5 x float4.
-struct PresentColour {
-    float4 r;        // xyz: weights of (Y', Cb', Cr') for R
-    float4 g;
-    float4 b;
-    float4 range;    // Y' = y * x + y, C' = c * z + w (y, c: unorm samples)
-    float4 params;   // x: sharpening strength (sharp pass)
-};
+            // ColourMapping.constants (PresentColourConstants in Swift): 5 x float4.
+            struct PresentColour {
+                float4 r;        // xyz: weights of (Y', Cb', Cr') for R
+                float4 g;
+                float4 b;
+                float4 range;    // Y' = y * x + y, C' = c * z + w (y, c: unorm samples)
+                float4 params;   // x: sharpening strength (sharp pass)
+            };
 
-static inline float3 present_yuv_to_rgb(float luma, float2 chroma, constant PresentColour &k)
-{
-    const float3 v = float3(luma * k.range.x + k.range.y, chroma * k.range.z + k.range.w);
-    return saturate(float3(dot(k.r.xyz, v), dot(k.g.xyz, v), dot(k.b.xyz, v)));
-}
+            static inline float3 present_yuv_to_rgb(float luma, float2 chroma, constant PresentColour &k)
+            {
+                const float3 v = float3(luma * k.range.x + k.range.y, chroma * k.range.z + k.range.w);
+                return saturate(float3(dot(k.r.xyz, v), dot(k.g.xyz, v), dot(k.b.xyz, v)));
+            }
 
-// One oversized triangle covering the viewport; no vertex buffer.
-vertex PresentVertexOut present_vertex(uint vid [[vertex_id]])
-{
-    const float2 p = float2(float((vid << 1) & 2), float(vid & 2));
-    PresentVertexOut out;
-    out.position = float4(p * 2.0 - 1.0, 0.0, 1.0);
-    out.uv = float2(p.x, 1.0 - p.y);
-    return out;
-}
+            // One oversized triangle covering the viewport; no vertex buffer.
+            vertex PresentVertexOut present_vertex(uint vid [[vertex_id]])
+            {
+                const float2 p = float2(float((vid << 1) & 2), float(vid & 2));
+                PresentVertexOut out;
+                out.position = float4(p * 2.0 - 1.0, 0.0, 1.0);
+                out.uv = float2(p.x, 1.0 - p.y);
+                return out;
+            }
 
-fragment float4 present_fragment(PresentVertexOut in [[stage_in]],
-                                 texture2d<float> lumaTexture [[texture(0)]],
-                                 texture2d<float> chromaTexture [[texture(1)]],
-                                 constant PresentColour &colour [[buffer(0)]])
-{
-    constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
-    return float4(present_yuv_to_rgb(lumaTexture.sample(s, in.uv).r, chromaTexture.sample(s, in.uv).rg, colour), 1.0);
-}
+            fragment float4 present_fragment(PresentVertexOut in [[stage_in]],
+                                             texture2d<float> lumaTexture [[texture(0)]],
+                                             texture2d<float> chromaTexture [[texture(1)]],
+                                             constant PresentColour &colour [[buffer(0)]])
+            {
+                constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
+                return float4(present_yuv_to_rgb(lumaTexture.sample(s, in.uv).r, chromaTexture.sample(s, in.uv).rg, colour), 1.0);
+            }
 
-// Catmull-Rom weights for the taps at -1, 0, +1, +2 around fraction f (sum 1). Polynomial, since a
-// Lanczos window needs sin() per tap.
-static inline float4 present_catmull_rom_weights(float f)
-{
-    const float f2 = f * f, f3 = f2 * f;
-    return float4(-0.5 * f3 + f2 - 0.5 * f,
-                  1.5 * f3 - 2.5 * f2 + 1.0,
-                  -1.5 * f3 + 2.0 * f2 + 0.5 * f,
-                  0.5 * f3 - 0.5 * f2);
-}
+            // Catmull-Rom weights for the taps at -1, 0, +1, +2 around fraction f (sum 1). Polynomial, since a
+            // Lanczos window needs sin() per tap.
+            static inline float4 present_catmull_rom_weights(float f)
+            {
+                const float f2 = f * f, f3 = f2 * f;
+                return float4(-0.5 * f3 + f2 - 0.5 * f,
+                              1.5 * f3 - 2.5 * f2 + 1.0,
+                              -1.5 * f3 + 2.0 * f2 + 0.5 * f,
+                              0.5 * f3 - 0.5 * f2);
+            }
 
-static inline float4 present_bspline_weights(float f)
-{
-    const float f2 = f * f, f3 = f2 * f, g = 1.0 - f;
-    return float4(g * g * g, 3.0 * f3 - 6.0 * f2 + 4.0, -3.0 * f3 + 3.0 * f2 + 3.0 * f + 1.0, f3) / 6.0;
-}
+            static inline float4 present_bspline_weights(float f)
+            {
+                const float f2 = f * f, f3 = f2 * f, g = 1.0 - f;
+                return float4(g * g * g, 3.0 * f3 - 6.0 * f2 + 4.0, -3.0 * f3 + 3.0 * f2 + 3.0 * f + 1.0, f3) / 6.0;
+            }
 
-// Upscaler: Catmull-Rom luma held to the nearest 2x2 texels, plus an unsharp mask against a B-spline
-// blur held to the 4x4 range. Chroma is bilinear.
-fragment float4 present_sharp_fragment(PresentVertexOut in [[stage_in]],
-                                       texture2d<float> lumaTexture [[texture(0)]],
-                                       texture2d<float> chromaTexture [[texture(1)]],
-                                       constant PresentColour &colour [[buffer(0)]])
-{
-    constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
-    const float2 size = float2(lumaTexture.get_width(), lumaTexture.get_height());
-    const float2 p = in.uv * size - 0.5;
-    const float2 base = floor(p);
-    const float2 f = p - base;
-    // Gathers around the texel corner base+1 cover texels base-1 .. base+2 on both axes.
-    // gather(): w = (x0,y0), z = (x1,y0), x = (x0,y1), y = (x1,y1).
-    const float2 c = (base + 1.0) / size;
-    const float4 tl = lumaTexture.gather(s, c, int2(-1, -1));
-    const float4 tr = lumaTexture.gather(s, c, int2( 1, -1));
-    const float4 bl = lumaTexture.gather(s, c, int2(-1,  1));
-    const float4 br = lumaTexture.gather(s, c, int2( 1,  1));
-    const float4 r0 = float4(tl.w, tl.z, tr.w, tr.z);
-    const float4 r1 = float4(tl.x, tl.y, tr.x, tr.y);
-    const float4 r2 = float4(bl.w, bl.z, br.w, br.z);
-    const float4 r3 = float4(bl.x, bl.y, br.x, br.y);
-    const float4 wx = present_catmull_rom_weights(f.x);
-    const float4 wy = present_catmull_rom_weights(f.y);
-    const float lz = wy.x * dot(r0, wx) + wy.y * dot(r1, wx) + wy.z * dot(r2, wx) + wy.w * dot(r3, wx);
+            // Upscaler: Catmull-Rom luma held to the nearest 2x2 texels, plus an unsharp mask against a B-spline
+            // blur held to the 4x4 range. Chroma is bilinear.
+            fragment float4 present_sharp_fragment(PresentVertexOut in [[stage_in]],
+                                                   texture2d<float> lumaTexture [[texture(0)]],
+                                                   texture2d<float> chromaTexture [[texture(1)]],
+                                                   constant PresentColour &colour [[buffer(0)]])
+            {
+                constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
+                const float2 size = float2(lumaTexture.get_width(), lumaTexture.get_height());
+                const float2 p = in.uv * size - 0.5;
+                const float2 base = floor(p);
+                const float2 f = p - base;
+                // Gathers around the texel corner base+1 cover texels base-1 .. base+2 on both axes.
+                // gather(): w = (x0,y0), z = (x1,y0), x = (x0,y1), y = (x1,y1).
+                const float2 c = (base + 1.0) / size;
+                const float4 tl = lumaTexture.gather(s, c, int2(-1, -1));
+                const float4 tr = lumaTexture.gather(s, c, int2( 1, -1));
+                const float4 bl = lumaTexture.gather(s, c, int2(-1,  1));
+                const float4 br = lumaTexture.gather(s, c, int2( 1,  1));
+                const float4 r0 = float4(tl.w, tl.z, tr.w, tr.z);
+                const float4 r1 = float4(tl.x, tl.y, tr.x, tr.y);
+                const float4 r2 = float4(bl.w, bl.z, br.w, br.z);
+                const float4 r3 = float4(bl.x, bl.y, br.x, br.y);
+                const float4 wx = present_catmull_rom_weights(f.x);
+                const float4 wy = present_catmull_rom_weights(f.y);
+                const float lz = wy.x * dot(r0, wx) + wy.y * dot(r1, wx) + wy.z * dot(r2, wx) + wy.w * dot(r3, wx);
 
-    const float a = r1.y, b = r1.z, cc = r2.y, d = r2.z;
-    const float mn = min(min(a, b), min(cc, d));
-    const float mx = max(max(a, b), max(cc, d));
-    const float held = clamp(lz, mn, mx);
+                const float a = r1.y, b = r1.z, cc = r2.y, d = r2.z;
+                const float mn = min(min(a, b), min(cc, d));
+                const float mx = max(max(a, b), max(cc, d));
+                const float held = clamp(lz, mn, mx);
 
-    const float4 bx = present_bspline_weights(f.x);
-    const float4 by = present_bspline_weights(f.y);
-    const float blur = by.x * dot(r0, bx) + by.y * dot(r1, bx) + by.z * dot(r2, bx) + by.w * dot(r3, bx);
-    const float4 lo = min(min(r0, r1), min(r2, r3)), hi = max(max(r0, r1), max(r2, r3));
-    const float mn4 = min(min(lo.x, lo.y), min(lo.z, lo.w));
-    const float mx4 = max(max(hi.x, hi.y), max(hi.z, hi.w));
-    // CAS amplitude: 1 in flat or mid-contrast areas, falling to 0 near clipping / hard edges.
-    const float amp = sqrt(saturate(min(mn4, 1.0 - mx4) / max(mx4, 1e-4)));
-    const float luma = clamp(held + colour.params.x * amp * (held - blur), mn4, mx4);
+                const float4 bx = present_bspline_weights(f.x);
+                const float4 by = present_bspline_weights(f.y);
+                const float blur = by.x * dot(r0, bx) + by.y * dot(r1, bx) + by.z * dot(r2, bx) + by.w * dot(r3, bx);
+                const float4 lo = min(min(r0, r1), min(r2, r3)), hi = max(max(r0, r1), max(r2, r3));
+                const float mn4 = min(min(lo.x, lo.y), min(lo.z, lo.w));
+                const float mx4 = max(max(hi.x, hi.y), max(hi.z, hi.w));
+                // CAS amplitude: 1 in flat or mid-contrast areas, falling to 0 near clipping / hard edges.
+                const float amp = sqrt(saturate(min(mn4, 1.0 - mx4) / max(mx4, 1e-4)));
+                const float luma = clamp(held + colour.params.x * amp * (held - blur), mn4, mx4);
 
-    return float4(present_yuv_to_rgb(luma, chromaTexture.sample(s, in.uv).rg, colour), 1.0);
-}
+                return float4(present_yuv_to_rgb(luma, chromaTexture.sample(s, in.uv).rg, colour), 1.0);
+            }
 
-// FPS HUD, drawn in the same pass (viewport = HUD rectangle, same full-screen triangle), so
-// no extra layer sits above the CAMetalLayer. Text texture: r = glyph coverage, g = red.
-fragment float4 hud_fragment(PresentVertexOut in [[stage_in]],
-                             texture2d<float> text [[texture(0)]])
-{
-    constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::nearest);
-    const float2 t = text.sample(s, in.uv).rg;
-    if (t.r > 0.5) {
-        return t.g > 0.5 ? float4(1.0, 0.3, 0.3, 1.0) : float4(1.0, 1.0, 1.0, 1.0);
-    }
-    return float4(0.0, 0.0, 0.0, 0.6);
-}
-"""#),
-        ("SceneCut.metal", #"""
-// SPDX-License-Identifier: AGPL-3.0-only
-// Shot-change test for one interpolation pair (ported from Veyra's VfgShotChange.hlsl): luma histogram
-// distance and SAD; a flash (large SAD, near-identical histogram) is not a cut.
-#include <metal_stdlib>
-using namespace metal;
+            // MetalFX path: the scaler's RGB output, drawn 1:1 into the letterboxed viewport.
+            fragment float4 copy_fragment(PresentVertexOut in [[stage_in]],
+                                          texture2d<float> rgb [[texture(0)]])
+            {
+                constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
+                return float4(rgb.sample(s, in.uv).rgb, 1.0);
+            }
 
-struct SceneCutParams {
-    uint width;
-    uint height;
-    uint compare;        // 0: no valid A, never a cut
-    uint videoRange;     // 1: expand Y 16..235 to 0..255 (Veyra's thresholds are full-range luma)
-    float cutSad;        // SceneCadenceAnalyzer::Config defaults
-    float cutHistogram;
-    float replacementSad;
-    float replacementHistogram;
-    float flashSad;
-    float flashHistogram;
-    float pad1;
-    float pad2;
-};
+            // FPS HUD, drawn in the same pass (viewport = HUD rectangle, same full-screen triangle), so
+            // no extra layer sits above the CAMetalLayer. Text texture: r = glyph coverage, g = red.
+            // white: the code value of white text (lower on an HDR layer, where 1.0 is peak brightness).
+            fragment float4 hud_fragment(PresentVertexOut in [[stage_in]],
+                                         texture2d<float> text [[texture(0)]],
+                                         constant float &white [[buffer(0)]])
+            {
+                constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::nearest);
+                const float2 t = text.sample(s, in.uv).rg;
+                if (t.r > 0.5) {
+                    return float4((t.g > 0.5 ? float3(1.0, 0.3, 0.3) : float3(1.0)) * white, 1.0);
+                }
+                return float4(0.0, 0.0, 0.0, 0.6);
+            }
+            """#
+        ),
+        (
+            "SceneCut.metal",
+            #"""
+            // SPDX-License-Identifier: AGPL-3.0-only
+            // Shot-change test for one interpolation pair (ported from Veyra's VfgShotChange.hlsl): luma histogram
+            // distance and SAD; a flash (large SAD, near-identical histogram) is not a cut.
+            #include <metal_stdlib>
+            using namespace metal;
 
-constant uint kCutColumns = 64;
-constant uint kCutRows = 36;
-constant uint kCutSamples = kCutColumns * kCutRows;
+            struct SceneCutParams {
+                uint width;
+                uint height;
+                uint compare;        // 0: no valid A, never a cut
+                uint videoRange;     // 1: expand Y 16..235 to 0..255 (Veyra's thresholds are full-range luma)
+                float cutSad;        // SceneCadenceAnalyzer::Config defaults
+                float cutHistogram;
+                float replacementSad;
+                float replacementHistogram;
+                float flashSad;
+                float flashHistogram;
+                float pad1;
+                float pad2;
+            };
 
-// out[0] = 1 on a cut, out[1] = SAD bits, out[2] = histogram distance bits.
-kernel void scene_cut(texture2d<float, access::read> previousLuma [[texture(0)]],
-                      texture2d<float, access::read> currentLuma [[texture(1)]],
-                      device uint *out [[buffer(0)]],
-                      constant SceneCutParams &p [[buffer(1)]],
-                      uint index [[thread_index_in_threadgroup]])
-{
-    threadgroup atomic_uint histogramPrevious[256];
-    threadgroup atomic_uint histogramCurrent[256];
-    threadgroup atomic_uint sadSum;
-    threadgroup atomic_uint histogramL1;
+            constant uint kCutColumns = 64;
+            constant uint kCutRows = 36;
+            constant uint kCutSamples = kCutColumns * kCutRows;
 
-    atomic_store_explicit(&histogramPrevious[index], 0u, memory_order_relaxed);
-    atomic_store_explicit(&histogramCurrent[index], 0u, memory_order_relaxed);
-    if (index == 0) {
-        atomic_store_explicit(&sadSum, 0u, memory_order_relaxed);
-        atomic_store_explicit(&histogramL1, 0u, memory_order_relaxed);
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (p.compare != 0) {
-        for (uint i = index; i < kCutSamples; i += 256) {
-            const uint2 at = uint2((i % kCutColumns) * p.width / kCutColumns,
-                                   (i / kCutColumns) * p.height / kCutRows);
-            float fa = previousLuma.read(at).r * 255.0, fb = currentLuma.read(at).r * 255.0;
-            if (p.videoRange != 0) { fa = (fa - 16.0) * (255.0 / 219.0); fb = (fb - 16.0) * (255.0 / 219.0); }
-            const uint a = uint(clamp(fa + 0.5, 0.0, 255.0));
-            const uint b = uint(clamp(fb + 0.5, 0.0, 255.0));
-            atomic_fetch_add_explicit(&histogramPrevious[a], 1u, memory_order_relaxed);
-            atomic_fetch_add_explicit(&histogramCurrent[b], 1u, memory_order_relaxed);
-            atomic_fetch_add_explicit(&sadSum, a > b ? a - b : b - a, memory_order_relaxed);
-        }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    const uint hp = atomic_load_explicit(&histogramPrevious[index], memory_order_relaxed);
-    const uint hc = atomic_load_explicit(&histogramCurrent[index], memory_order_relaxed);
-    atomic_fetch_add_explicit(&histogramL1, hp > hc ? hp - hc : hc - hp, memory_order_relaxed);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (index == 0) {
-        const float sad = float(atomic_load_explicit(&sadSum, memory_order_relaxed)) / (255.0 * float(kCutSamples));
-        const float histogram = float(atomic_load_explicit(&histogramL1, memory_order_relaxed)) / (2.0 * float(kCutSamples));
-        const bool flash = sad > p.flashSad && histogram < p.flashHistogram;
-        const bool cut = p.compare != 0 && !flash &&
-            ((sad > p.cutSad && histogram > p.cutHistogram) ||
-             (sad > p.replacementSad && histogram > p.replacementHistogram));
-        out[0] = cut ? 1u : 0u;
-        out[1] = as_type<uint>(sad);
-        out[2] = as_type<uint>(histogram);
-    }
-}
-"""#),
+            // out[0] = 1 on a cut, out[1] = SAD bits, out[2] = histogram distance bits.
+            kernel void scene_cut(texture2d<float, access::read> previousLuma [[texture(0)]],
+                                  texture2d<float, access::read> currentLuma [[texture(1)]],
+                                  device uint *out [[buffer(0)]],
+                                  constant SceneCutParams &p [[buffer(1)]],
+                                  uint index [[thread_index_in_threadgroup]])
+            {
+                threadgroup atomic_uint histogramPrevious[256];
+                threadgroup atomic_uint histogramCurrent[256];
+                threadgroup atomic_uint sadSum;
+                threadgroup atomic_uint histogramL1;
+
+                atomic_store_explicit(&histogramPrevious[index], 0u, memory_order_relaxed);
+                atomic_store_explicit(&histogramCurrent[index], 0u, memory_order_relaxed);
+                if (index == 0) {
+                    atomic_store_explicit(&sadSum, 0u, memory_order_relaxed);
+                    atomic_store_explicit(&histogramL1, 0u, memory_order_relaxed);
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (p.compare != 0) {
+                    for (uint i = index; i < kCutSamples; i += 256) {
+                        const uint2 at = uint2((i % kCutColumns) * p.width / kCutColumns,
+                                               (i / kCutColumns) * p.height / kCutRows);
+                        float fa = previousLuma.read(at).r * 255.0, fb = currentLuma.read(at).r * 255.0;
+                        if (p.videoRange != 0) { fa = (fa - 16.0) * (255.0 / 219.0); fb = (fb - 16.0) * (255.0 / 219.0); }
+                        const uint a = uint(clamp(fa + 0.5, 0.0, 255.0));
+                        const uint b = uint(clamp(fb + 0.5, 0.0, 255.0));
+                        atomic_fetch_add_explicit(&histogramPrevious[a], 1u, memory_order_relaxed);
+                        atomic_fetch_add_explicit(&histogramCurrent[b], 1u, memory_order_relaxed);
+                        atomic_fetch_add_explicit(&sadSum, a > b ? a - b : b - a, memory_order_relaxed);
+                    }
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                const uint hp = atomic_load_explicit(&histogramPrevious[index], memory_order_relaxed);
+                const uint hc = atomic_load_explicit(&histogramCurrent[index], memory_order_relaxed);
+                atomic_fetch_add_explicit(&histogramL1, hp > hc ? hp - hc : hc - hp, memory_order_relaxed);
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (index == 0) {
+                    const float sad = float(atomic_load_explicit(&sadSum, memory_order_relaxed)) / (255.0 * float(kCutSamples));
+                    const float histogram = float(atomic_load_explicit(&histogramL1, memory_order_relaxed)) / (2.0 * float(kCutSamples));
+                    const bool flash = sad > p.flashSad && histogram < p.flashHistogram;
+                    const bool cut = p.compare != 0 && !flash &&
+                        ((sad > p.cutSad && histogram > p.cutHistogram) ||
+                         (sad > p.replacementSad && histogram > p.replacementHistogram));
+                    out[0] = cut ? 1u : 0u;
+                    out[1] = as_type<uint>(sad);
+                    out[2] = as_type<uint>(histogram);
+                }
+            }
+            """#
+        ),
     ]
 }

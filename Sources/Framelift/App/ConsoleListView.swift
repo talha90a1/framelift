@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Main window: paired consoles (Wake / Connect), consoles found on the network, Discover, Pair.
 import SwiftUI
 
 struct ConsoleListView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var store: ConsoleStore
     @EnvironmentObject private var coordinator: StreamCoordinator
-    @EnvironmentObject private var updates: UpdateChecker
+    @EnvironmentObject private var input: InputManager
     @State private var pairing: PairRequest?
     @State private var removing: PairedConsole?
     @State private var showCableSetup = false
@@ -15,9 +14,14 @@ struct ConsoleListView: View {
     var body: some View {
         VStack(spacing: 0) {
             List {
+                if let status = input.controllerStatus {
+                    Section("Controller") {
+                        ControllerSetupView(status: status, didUnpair: input.didUnpairDualSense)
+                    }
+                }
                 Section("My consoles") {
                     if store.consoles.isEmpty {
-                        Text("No paired PS5 yet. Turn the PS5 on, then click Pair Console.")
+                        Text("Turn on your PS5, then click Pair Console.")
                             .foregroundStyle(.secondary)
                     }
                     ForEach(store.consoles) { console in
@@ -47,10 +51,6 @@ struct ConsoleListView: View {
                         }
                     }
                 }
-            }
-            if let release = updates.available, !updates.bannerHidden {
-                Divider()
-                UpdateBanner(release: release, hide: { updates.bannerHidden = true })
             }
             if showsCableTip {
                 Divider()
@@ -96,7 +96,7 @@ struct ConsoleListView: View {
         ) { console in
             Button("Remove", role: .destructive) { store.remove(console.id) }
         } message: { _ in
-            Text("Its Remote Play keys are deleted from this Mac. You'll need a new PIN to pair again.")
+            Text("This removes the saved pairing. You’ll need a new PIN to reconnect.")
         }
         .alert(item: $model.errorAlert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message))
@@ -116,32 +116,11 @@ private struct CableTip: View {
         HStack(spacing: 10) {
             Image(systemName: "cable.connector")
                 .foregroundStyle(.secondary)
-            Text("Best experience: connect the PS5 straight to this Mac with an Ethernet cable.")
+            Text("Connect your PS5 by Ethernet for a steadier stream.")
                 .font(.callout)
             Spacer()
-            Button("How?", action: showSetup)
+            Button("Setup", action: showSetup)
             Button("Don't Show Again", action: hide)
-                .buttonStyle(.borderless)
-                .font(.callout)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-    }
-}
-
-private struct UpdateBanner: View {
-    var release: Release
-    var hide: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "arrow.down.circle")
-                .foregroundStyle(.secondary)
-            Text("Framelift \(release.version) is available.")
-                .font(.callout)
-            Spacer()
-            Button("Release Page") { NSWorkspace.shared.open(release.url) }
-            Button("Later", action: hide)
                 .buttonStyle(.borderless)
                 .font(.callout)
         }
@@ -156,23 +135,19 @@ private struct CableSetupSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Best connection: PS5 to Mac by cable").font(.title2.bold())
-            Text("A direct Ethernet cable gives the lowest lag and no Wi-Fi drops.")
-                .foregroundStyle(.secondary)
-
+            Text("Connect by Ethernet").font(.title2.bold())
             VStack(alignment: .leading, spacing: 8) {
                 Text("Connect").font(.headline)
                 Text("1. Plug an Ethernet cable from the PS5 into this Mac. A MacBook needs a USB-C Ethernet adapter.")
                 Text("2. On the PS5, open **Settings › Network › Settings › Set Up Internet Connection** and choose the wired connection.")
-                Text("3. In Framelift, click **Discover**, then pair or connect as usual.")
+                Text("3. In Framelift, click **Discover**, then pair or connect.")
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Want internet on the PS5 too?").font(.headline)
-                Text("Share this Mac's internet over the cable:")
+                Text("Internet Sharing (optional)").font(.headline)
                 Text("1. Open **System Settings › General › Sharing**.")
                 Text("2. Click **ⓘ** next to **Internet Sharing**. Share your connection from **Wi-Fi** to the Ethernet adapter, click **Done**.")
-                Text("3. Turn **Internet Sharing** on. The PS5 now gets internet through your Mac.")
+                Text("3. Turn on **Internet Sharing**.")
             }
             .fixedSize(horizontal: false, vertical: true)
 
@@ -223,7 +198,7 @@ private struct PairedConsoleRow: View {
     }
 
     private var statusText: String {
-        guard let found else { return "Not found — click Discover" }
+        guard let found else { return "Not found" }
         return found.standby ? "Rest mode" : "Ready"
     }
 
@@ -236,7 +211,6 @@ private struct PairedConsoleRow: View {
 private struct StatusBar: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var coordinator: StreamCoordinator
-    @EnvironmentObject private var input: InputManager
 
     var body: some View {
         HStack(spacing: 16) {
@@ -244,13 +218,17 @@ private struct StatusBar: View {
                 ProgressView().controlSize(.small)
                 Text(message)
             } else {
-                Label(input.controllerName ?? "No controller (keyboard fallback)", systemImage: "gamecontroller")
                 Label(model.targetDisplayLabel, systemImage: "display")
                 Label(presetText, systemImage: "film")
             }
             Spacer()
-            if coordinator.isActive {
+            switch coordinator.phase {
+            case .connecting:
+                Button("Cancel") { coordinator.stop() }
+            case .streaming:
                 Button("Leave Stream") { coordinator.stop() }
+            case .idle, .stopping:
+                EmptyView()
             }
         }
         .font(.callout)
@@ -270,7 +248,6 @@ private struct StatusBar: View {
     }
 
     private var presetText: String {
-        let preset = StreamPreset(settings: model.settings)?.title ?? "\(model.settings.height)p"
-        return "\(preset) · Apple ML 60 fps"
+        StreamPreset(settings: model.settings)?.title ?? "\(model.settings.height)p"
     }
 }

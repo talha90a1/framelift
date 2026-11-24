@@ -1,22 +1,45 @@
 # Changelog
 
-All notable changes to this project are documented in this file.
+## 1.0.2 - 2026-11-24
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+### Added
+
+- Download and install updates from **Framelift › Check for Updates…**.
+- 1080p and 720p presets at 30 or 60 fps.
+- 10-bit HDR on compatible displays.
+- Apple MetalFX upscaling.
+- Press a button to select the controller when several are connected.
+- In-app DualSense pairing, disconnect, and unpair, with an animated button guide.
+- Separate stream video recording and a Delete Logs button.
+
+Install this version from GitHub to enable in-app updates for future releases.
+
+### Fixed
+
+- Framelift stays open if the connection breaks during a write.
+- Prevented a VideoToolbox crash when leaving a stream during frame generation.
+- Prevented a crash on Connect when the packaged app loaded its shaders.
+- Fullscreen opens once the first PS5 video frame arrives.
+- Native 60 fps streams stay at 60 fps on 120 Hz displays.
+- HDR recordings use the HEVC format.
+- Turned off frame blending and the HUD guard by default to reduce ghosting in motion.
+
+### Removed
+
+- Keyboard and mouse gameplay input.
 
 ## 1.0.1 - 2026-11-24
 
 ### Added
 
-- Settings › Picture › Sharpness (0 to 1.5, default 0.5) for screens larger than 1080p.
-- Update check: at launch Framelift asks GitHub for the latest release and shows a bar with a link when a newer one is out. Framelift › Check for Updates… checks by hand; Settings › Updates turns the launch check off. Nothing is downloaded.
+- Sharpness control for upscaled video.
+- Optional update checks at launch and **Framelift › Check for Updates…**.
 
 ### Changed
 
-- Stronger upscale sharpening: the old one was clamped to the nearest 2x2 pixels, which cancelled most of it.
-- The bitrate goes up to 100 Mbps (was 50).
-- Reconnecting after a dropped stream waits for the PS5 to release the old session (20, 30, then 40 s, up to 3 tries) instead of one retry after 1.5 s, which the PS5 refused as "in use". A PS5 that says it is still in use right after a stream from this Mac counts as a retry too (10, 20, 40 s).
-- The stream socket asks for a 4 MiB receive buffer (1 MB if refused), so bursts at high bitrates don't overflow it.
+- Raised the maximum bitrate to 100 Mbps.
+- Reconnect waits for the PS5 to close the previous session and retries up to three times.
+- Increased the requested receive buffer to 4 MiB, with a 1 MiB fallback.
 
 ## 1.0.0 - 2026-11-23
 
@@ -27,10 +50,10 @@ First public version.
 - Native macOS PS5 Remote Play client for Apple Silicon, built on chiaki-ng's C library and a C++20 Remote Play core ported from Veyra.
 - Console discovery on the local network, wake from rest mode, and pairing with a PIN and Sign in with PlayStation. Remote Play keys are stored in an owner-only file on the Mac.
 - Hardware H.264 and HEVC decoding with VideoToolbox. The stream keeps decoding through packet loss instead of freezing until the next keyframe.
-- 1080p at 30 fps from the PS5, shown at 60 fps with Apple's `VTLowLatencyFrameInterpolation`.
+- 1080p at 30 fps, interpolated to 60 fps with Apple’s VideoToolbox.
 - A static-overlay guard that keeps subtitles and HUD sharp in generated frames.
 - A 50/50 blend of the two real frames when a generated frame is late.
-- A keep-warm option that keeps the interpolation model fast between frames.
+- Optional interpolation warm-up between frames.
 - A shot-change test that avoids generating frames across scene cuts.
 - Metal presentation paced per display, with a choice of 3 (default) or 2 display buffers, and color handling taken from the stream's tags.
 - Fullscreen play on a chosen display, including a TV over HDMI.

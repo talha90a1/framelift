@@ -1,40 +1,61 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// The final present: one 4:2:0 frame -> aspect-fit, letterboxed bgra8Unorm RGB plus the HUD,
-// encoded into the caller's command buffer. Upscales use the Sharp (Catmull-Rom + adaptive
-// sharpening) or Bilinear pass. Confined to one thread.
 import CoreVideo
 import Foundation
 import Metal
+import MetalFX
 
 /// The method one present actually used.
 enum UpscaleMethod: String, Sendable {
-    case bilinear, sharp
+    case bilinear, sharp, metalFX
 }
 
 final class PresentEncoder: @unchecked Sendable {
     /// Strength of the sharp pass's adaptive sharpening (0 = plain Catmull-Rom).
     var sharpness: Float = Float(StreamSettingsLimits.defaultSharpness)
+    var upscaler: Upscaler = .sharp
     /// Matrix + range of the YUV->RGB step (the presenter sets it per stream format and colour mode).
     var colour = ColourMapping.standard {
         didSet { if colour != oldValue { constants = Self.makeConstants(colour) } }
     }
     private var constants = PresentEncoder.makeConstants(.standard)
 
-    private let bilinearPipeline: MTLRenderPipelineState
-    private let sharpPipeline: MTLRenderPipelineState
-    private let hudPipeline: MTLRenderPipelineState
+    private struct Pipelines {
+        var bilinear, sharp, copy, hud: MTLRenderPipelineState
+    }
+    /// By target pixel format: bgra8Unorm (SDR drawable and MetalFX input), bgr10a2Unorm (HDR
+    /// drawable), rgba16Float (HDR MetalFX input).
+    private var pipelines: [MTLPixelFormat: Pipelines] = [:]
+
+    private struct ScalerKey: Equatable {
+        var inWidth, inHeight, outWidth, outHeight: Int
+        var format: MTLPixelFormat
+    }
+    private struct SpatialScaler {
+        let key: ScalerKey
+        let scaler: MTLFXSpatialScaler
+        let input, output: MTLTexture
+    }
+    private var scaler: SpatialScaler?
+    /// A size and format MetalFX refused; the sharp pass is used for it.
+    private var refusedScaler: ScalerKey?
+
     private let ctx: RenderContext
 
-    init(context: RenderContext, pixelFormat: MTLPixelFormat = .bgra8Unorm) throws {
+    init(context: RenderContext) throws {
         ctx = context
-        func pipeline(_ label: String, _ fragment: String, blend: Bool = false) throws -> MTLRenderPipelineState {
+        _ = try pipelines(for: .bgra8Unorm)
+    }
+
+    private func pipelines(for format: MTLPixelFormat) throws -> Pipelines {
+        if let p = pipelines[format] { return p }
+        func pipeline(_ fragment: String, blend: Bool = false) throws -> MTLRenderPipelineState {
             let d = MTLRenderPipelineDescriptor()
-            d.label = label
-            guard let v = context.library.makeFunction(name: "present_vertex") else { throw RenderError.missingFunction("present_vertex") }
-            guard let f = context.library.makeFunction(name: fragment) else { throw RenderError.missingFunction(fragment) }
+            d.label = "framelift.\(fragment)"
+            guard let v = ctx.library.makeFunction(name: "present_vertex") else { throw RenderError.missingFunction("present_vertex") }
+            guard let f = ctx.library.makeFunction(name: fragment) else { throw RenderError.missingFunction(fragment) }
             d.vertexFunction = v
             d.fragmentFunction = f
-            d.colorAttachments[0].pixelFormat = pixelFormat
+            d.colorAttachments[0].pixelFormat = format
             if blend {
                 let c = d.colorAttachments[0]!
                 c.isBlendingEnabled = true
@@ -43,11 +64,13 @@ final class PresentEncoder: @unchecked Sendable {
                 c.sourceAlphaBlendFactor = .one
                 c.destinationAlphaBlendFactor = .oneMinusSourceAlpha
             }
-            return try context.device.makeRenderPipelineState(descriptor: d)
+            return try ctx.device.makeRenderPipelineState(descriptor: d)
         }
-        bilinearPipeline = try pipeline("framelift.present", "present_fragment")
-        sharpPipeline = try pipeline("framelift.present.sharp", "present_sharp_fragment")
-        hudPipeline = try pipeline("framelift.hud", "hud_fragment", blend: true)
+        let p = Pipelines(
+            bilinear: try pipeline("present_fragment"), sharp: try pipeline("present_sharp_fragment"),
+            copy: try pipeline("copy_fragment"), hud: try pipeline("hud_fragment", blend: true))
+        pipelines[format] = p
+        return p
     }
 
     /// 8-bit and 10-bit variants (offsets differ slightly per bit depth), computed once per mapping.
@@ -62,17 +85,83 @@ final class PresentEncoder: @unchecked Sendable {
         return (Int((Double(dw - w) / 2).rounded()), Int((Double(dh - h) / 2).rounded()), w, h)
     }
 
-    /// Encodes `frame` into `target` (cleared to black outside the picture) and the HUD.
-    /// Returns the method used, or nil if nothing was encoded. The command buffer retains every
-    /// texture it uses; the caller keeps `keep` (the CVMetalTextures) alive until it completes.
-    func encode(_ frame: CVPixelBuffer, into target: MTLTexture, commandBuffer cb: MTLCommandBuffer,
-                hud: MTLTexture?) -> (method: UpscaleMethod, keep: [AnyObject])? {
-        guard let (yTex, cTex, keep) = ctx.yuvTextures(frame) else { return nil }
+    private func spatialScaler(_ key: ScalerKey) -> SpatialScaler? {
+        if let scaler, scaler.key == key { return scaler }
+        if refusedScaler == key { return nil }
+        let d = MTLFXSpatialScalerDescriptor()
+        d.inputWidth = key.inWidth
+        d.inputHeight = key.inHeight
+        d.outputWidth = key.outWidth
+        d.outputHeight = key.outHeight
+        d.colorTextureFormat = key.format
+        d.outputTextureFormat = key.format
+        // SDR and PQ/HLG values are both perceptually coded in 0...1.
+        d.colorProcessingMode = .perceptual
+        func texture(_ w: Int, _ h: Int, _ usage: MTLTextureUsage) -> MTLTexture? {
+            let t = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: key.format, width: w, height: h, mipmapped: false)
+            t.usage = usage
+            t.storageMode = .private
+            return ctx.device.makeTexture(descriptor: t)
+        }
+        guard MTLFXSpatialScalerDescriptor.supportsDevice(ctx.device), let s = d.makeSpatialScaler(device: ctx.device),
+            let input = texture(key.inWidth, key.inHeight, [.renderTarget, .shaderRead, s.colorTextureUsage]),
+            let output = texture(key.outWidth, key.outHeight, [.shaderRead, s.outputTextureUsage])
+        else {
+            refusedScaler = key
+            Diagnostics.shared.event("render: MetalFX refused \(key.inWidth)x\(key.inHeight) -> \(key.outWidth)x\(key.outHeight), using the sharp pass")
+            return nil
+        }
+        s.colorTexture = input
+        s.outputTexture = output
+        s.inputContentWidth = key.inWidth
+        s.inputContentHeight = key.inHeight
+        scaler = SpatialScaler(key: key, scaler: s, input: input, output: output)
+        return scaler
+    }
+
+    /// Retain the returned CVMetalTextures until the command buffer completes.
+    func encode(
+        _ frame: CVPixelBuffer, into target: MTLTexture, commandBuffer cb: MTLCommandBuffer,
+        hud: MTLTexture?
+    ) -> (method: UpscaleMethod, keep: [AnyObject])? {
+        guard let (yTex, cTex, keep) = ctx.yuvTextures(frame), let p = try? pipelines(for: target.pixelFormat) else { return nil }
         let dw = target.width, dh = target.height
         let fw = CVPixelBufferGetWidth(frame), fh = CVPixelBufferGetHeight(frame)
         let fit = Self.fitRect(frame: fw, fh, target: dw, dh)
         let isUpscale = fit.w > fw || fit.h > fh
-        let method: UpscaleMethod = isUpscale ? .sharp : .bilinear
+        let hdr = colour.layer.isHDR
+        var k = PixelFormats.is8Bit420(frame) ? constants.eight : constants.ten
+        k.params.x = sharpness
+
+        var scaled: MTLTexture?
+        if isUpscale, upscaler == .metalFX,
+            let s = spatialScaler(
+                ScalerKey(
+                    inWidth: fw, inHeight: fh, outWidth: fit.w, outHeight: fit.h,
+                    format: hdr ? .rgba16Float : .bgra8Unorm)),
+            let rgb = try? pipelines(for: s.input.pixelFormat)
+        {
+            let rp = MTLRenderPassDescriptor()
+            rp.colorAttachments[0].texture = s.input
+            rp.colorAttachments[0].loadAction = .dontCare
+            rp.colorAttachments[0].storeAction = .store
+            guard let enc = cb.makeRenderCommandEncoder(descriptor: rp) else { return nil }
+            enc.label = "framelift.present.rgb"
+            enc.setRenderPipelineState(rgb.bilinear)
+            enc.setFragmentTexture(yTex, index: 0)
+            enc.setFragmentTexture(cTex, index: 1)
+            enc.setFragmentBytes(&k, length: MemoryLayout<PresentColourConstants>.stride, index: 0)
+            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+            enc.endEncoding()
+            s.scaler.encode(commandBuffer: cb)
+            scaled = s.output
+        }
+        let method: UpscaleMethod
+        if scaled != nil {
+            method = .metalFX
+        } else {
+            method = isUpscale ? .sharp : .bilinear
+        }
 
         let rp = MTLRenderPassDescriptor()
         rp.colorAttachments[0].texture = target
@@ -82,12 +171,15 @@ final class PresentEncoder: @unchecked Sendable {
         guard let enc = cb.makeRenderCommandEncoder(descriptor: rp) else { return nil }
         enc.label = "framelift.present.\(method.rawValue)"
         enc.setViewport(MTLViewport(originX: Double(fit.x), originY: Double(fit.y), width: Double(fit.w), height: Double(fit.h), znear: 0, zfar: 1))
-        enc.setRenderPipelineState(method == .sharp ? sharpPipeline : bilinearPipeline)
-        enc.setFragmentTexture(yTex, index: 0)
-        enc.setFragmentTexture(cTex, index: 1)
-        var k = PixelFormats.is8Bit420(frame) ? constants.eight : constants.ten
-        k.params.x = sharpness
-        enc.setFragmentBytes(&k, length: MemoryLayout<PresentColourConstants>.stride, index: 0)
+        if let scaled {
+            enc.setRenderPipelineState(p.copy)
+            enc.setFragmentTexture(scaled, index: 0)
+        } else {
+            enc.setRenderPipelineState(method == .sharp ? p.sharp : p.bilinear)
+            enc.setFragmentTexture(yTex, index: 0)
+            enc.setFragmentTexture(cTex, index: 1)
+            enc.setFragmentBytes(&k, length: MemoryLayout<PresentColourConstants>.stride, index: 0)
+        }
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         if let text = hud {
             let dwD = Double(dw), dhD = Double(dh)
@@ -95,8 +187,16 @@ final class PresentEncoder: @unchecked Sendable {
             let w = Double(text.width) * scale, h = Double(text.height) * scale
             let margin = (dhD * 0.02).rounded()
             enc.setViewport(MTLViewport(originX: margin, originY: margin, width: min(w, dwD - margin), height: min(h, dhD - margin), znear: 0, zfar: 1))
-            enc.setRenderPipelineState(hudPipeline)
+            enc.setRenderPipelineState(p.hud)
             enc.setFragmentTexture(text, index: 0)
+            // HDR reference white is 203 nits.
+            var white: Float =
+                switch colour.layer.curve {
+                case .pq: 0.58
+                case .hlg: 0.75
+                default: 1
+                }
+            enc.setFragmentBytes(&white, length: MemoryLayout<Float>.size, index: 0)
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         }
         enc.endEncoding()

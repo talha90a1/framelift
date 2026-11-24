@@ -4,10 +4,10 @@
 import Foundation
 
 enum MidState {
-    case none        // not requested (first frame, discontinuity, display too slow)
+    case none  // not requested (first frame, discontinuity, display too slow)
     case pending
-    case ready       // all of the pair's generated frames
-    case failed      // scene cut, or no content at all by the deadline
+    case ready  // all of the pair's generated frames
+    case failed  // scene cut, or no content at all by the deadline
 }
 
 enum PacerDecision: Equatable {
@@ -23,12 +23,12 @@ enum PacerDecision: Equatable {
 }
 
 struct PacerCounters {
-    var droppedReal: UInt64 = 0      // real frames never shown (replaced by a newer one)
-    var skippedMid: UInt64 = 0       // pairs whose generated slot showed a real frame instead
-    var repeatedSlots: UInt64 = 0    // vsyncs that should have had new content but did not
-    var phaseEarlier: UInt64 = 0     // cadence moved one refresh earlier (budget slack)
-    var phaseLater: UInt64 = 0       // cadence moved later (missed deadlines)
-    var queueDrains: UInt64 = 0      // generated frames left out to drain a present backlog
+    var droppedReal: UInt64 = 0  // real frames never shown (replaced by a newer one)
+    var skippedMid: UInt64 = 0  // pairs whose generated slot showed a real frame instead
+    var repeatedSlots: UInt64 = 0  // vsyncs that should have had new content but did not
+    var phaseEarlier: UInt64 = 0  // cadence moved one refresh earlier (budget slack)
+    var phaseLater: UInt64 = 0  // cadence moved later (missed deadlines)
+    var queueDrains: UInt64 = 0  // generated frames left out to drain a present backlog
 }
 
 final class FramePacer {
@@ -67,7 +67,8 @@ final class FramePacer {
     /// Period of the grid slots are placed on: the display link's tick period (s).
     private(set) var refresh: Double = 1.0 / 60
     private(set) var interval: Double = 1.0 / 30
-    private(set) var budget: Double = 0.0165          // anchor -> generated frames ready (p95 + margin, s)
+    private static let startupBudget = 0.0165
+    private(set) var budget = FramePacer.startupBudget
     private(set) var counters = PacerCounters()
     private var smoothed: Double?
     private var outlierSide = 0
@@ -87,7 +88,7 @@ final class FramePacer {
     var earlierBlockAfterLater = 10.0
     private var earlyStreak = 0
     private var lastLaterAnchor: Double?
-    private var outcomes: [Bool] = []     // last 8 first-slot deadlines: true = missed
+    private var outcomes: [Bool] = []  // last 8 first-slot deadlines: true = missed
     private var recentMisses: Int { outcomes.lazy.filter { $0 }.count }
 
     /// Presents (after a reset or display change) before the usual lag is trusted; no drain before.
@@ -116,7 +117,7 @@ final class FramePacer {
 
     // MARK: Inputs
 
-    func reset() {
+    func reset(keepingBudget: Bool = false) {
         entries.removeAll()
         smoothed = nil
         lastDecoded = nil
@@ -128,6 +129,10 @@ final class FramePacer {
         lastLaterAnchor = nil
         outcomes.removeAll()
         holdSteps = 1
+        if !keepingBudget {
+            readySamples = PercentileWindow(capacity: readySamples.capacity)
+            budget = Self.startupBudget
+        }
         resetPresentLag()
     }
 
@@ -169,7 +174,7 @@ final class FramePacer {
         } else {
             let side = err > 0 ? 1 : -1
             if outlierSide == side {
-                anchor = t          // second outlier on the same side: follow it
+                anchor = t  // second outlier on the same side: follow it
                 outlierSide = 0
             } else {
                 anchor = predicted  // single outlier: keep the cadence
@@ -188,7 +193,7 @@ final class FramePacer {
         readySamples.add(offset)
         guard readySamples.count >= 5 else { return }
         let target = readySamples.percentile(0.95) + 0.0005
-        if abs(target - budget) > 0.001 {   // hysteresis
+        if abs(target - budget) > 0.001 {  // hysteresis
             budget = min(target, interval)
         }
     }
@@ -338,7 +343,8 @@ final class FramePacer {
 
         // 2. The oldest entry's next generated slot (the newest one due, after a late tick).
         if let e = entries.first, let first = e.firstSlot, e.nextIndex < e.generated,
-           first + Double(e.nextIndex) * e.step <= target + eps {
+            first + Double(e.nextIndex) * e.step <= target + eps
+        {
             let due = min(e.generated - 1, Int(((target + eps - first) / e.step).rounded(.down)))
             e.nextIndex = max(e.nextIndex, due)
             if drainPending {
@@ -364,7 +370,7 @@ final class FramePacer {
             let expected = generatesFrames ? Double(holdSteps) * refresh : max(refresh, (interval / refresh).rounded() * refresh)
             if gap > expected + refresh * 0.5, gap < interval * 2.5 {
                 counters.repeatedSlots += 1
-                lastNewContentSlot = last + refresh   // count every missing slot once
+                lastNewContentSlot = last + refresh  // count every missing slot once
             }
         }
         return .hold
@@ -402,7 +408,7 @@ final class FramePacer {
             return slot
         }
         let expected = last.slot + max(1, ((e.anchor - last.anchor) / r).rounded()) * r
-        let slack = expected - natural      // >= 0: the cadence slot meets the budget
+        let slack = expected - natural  // >= 0: the cadence slot meets the budget
         // An earlier step needs slack against p99 + 1 ms, not just the p95 budget.
         let tail = max(0, readySamples.percentile(0.99) + 0.001 - budget)
         let blocked = lastLaterAnchor.map { e.anchor - $0 < earlierBlockAfterLater } ?? false

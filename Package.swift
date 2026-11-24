@@ -10,6 +10,7 @@ let package = Package(
     name: "Framelift",
     platforms: [.macOS("26.0")],
     products: [.executable(name: "Framelift", targets: ["Framelift"])],
+    dependencies: [.package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1")],
     targets: [
         .target(
             name: "VeyraCore",
@@ -41,15 +42,18 @@ let package = Package(
         ),
         .executableTarget(
             name: "Framelift",
-            dependencies: ["VeyraCore"],
+            dependencies: ["VeyraCore", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/Framelift",
-            resources: [.copy("Render/Shaders")],
+            resources: [.copy("Render/Shaders"), .copy("App/DualSensePairing.usdz")],
             swiftSettings: [.swiftLanguageMode(.v5)],
             linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
                 .linkedFramework("VideoToolbox"),
+                .linkedFramework("MetalFX"),
                 .linkedFramework("Metal"),
                 .linkedFramework("QuartzCore"),
                 .linkedFramework("GameController"),
+                .linkedFramework("IOBluetooth"),
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreHaptics"),
             ]

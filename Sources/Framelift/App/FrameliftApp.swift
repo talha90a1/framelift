@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// SwiftUI app: console list window, Settings (Cmd+,), stream commands.
 import AppKit
+import Darwin
 import SwiftUI
 
 final class FrameliftAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        signal(SIGPIPE, SIG_IGN)
         // Also needed when the bare SwiftPM binary is run outside an .app bundle.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
@@ -24,7 +25,6 @@ final class FrameliftAppDelegate: NSObject, NSApplicationDelegate {
 struct FrameliftApp: App {
     @NSApplicationDelegateAdaptor(FrameliftAppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel.shared
-    @AppStorage(DebugLogs.defaultsKey) private var debugLogs = DebugLogs.enabledByDefault
 
     var body: some Scene {
         Window("Framelift", id: "main") {
@@ -33,22 +33,28 @@ struct FrameliftApp: App {
                 .environmentObject(model.consoles)
                 .environmentObject(model.coordinator)
                 .environmentObject(model.input)
-                .environmentObject(model.updates)
         }
         .defaultSize(width: 620, height: 460)
         .commands {
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") { model.updates.checkNow() }
+                CheckForUpdatesButton(updater: model.updates)
+                if let license = Bundle.main.url(forResource: "LICENSE", withExtension: nil),
+                    let notices = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md")
+                {
+                    Button("Show Licenses in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([license, notices])
+                    }
+                }
             }
             CommandMenu("Stream") {
                 Button("Leave Stream") { model.coordinator.stop() }
                     .keyboardShortcut("q", modifiers: [.command, .shift])
                     .disabled(!model.coordinator.isActive)
-                Toggle("Show Overlay", isOn: $model.settings.showOverlay)
+                Toggle("Show Performance Overlay", isOn: $model.settings.showOverlay)
                     .keyboardShortcut("o", modifiers: [.command, .shift])
                 Button("Latency Probe (Press Options)") {
                     model.coordinator.streamWindowToggledLatencyProbe()
-                    model.settings.showOverlay = true // the probe reports in the overlay
+                    model.settings.showOverlay = true  // the probe reports in the overlay
                 }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
                 .disabled(!model.coordinator.isActive || !model.coordinator.debugLogs)
@@ -57,10 +63,8 @@ struct FrameliftApp: App {
                     .keyboardShortcut("r")
                     .disabled(model.isDiscovering)
                 Divider()
-                Button("Reveal Logs") { model.revealLogs() }
-                    .disabled(!debugLogs)
+                Button("Show Logs in Finder") { model.revealLogs() }
                 Button("Export Logs…") { model.exportLogs() }
-                    .disabled(!debugLogs)
             }
         }
 

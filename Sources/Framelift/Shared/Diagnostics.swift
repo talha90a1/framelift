@@ -24,7 +24,7 @@ final class Diagnostics: @unchecked Sendable {
     struct FrameRecord {
         var sequence: UInt64 = 0
         var stamps = [UInt64](repeating: 0, count: Stage.allCases.count)
-        var backend: UInt8 = 0     // 0 none, 3 blend, 4 repeat, 6 Apple ML
+        var backend: UInt8 = 0  // 0 none, 3 blend, 4 repeat, 6 Apple ML
         var discontinuity = false
         var complete: Bool { stamps[Stage.realPresented.rawValue] != 0 }
     }
@@ -50,14 +50,15 @@ final class Diagnostics: @unchecked Sendable {
     // MARK: lifecycle
 
     /// `header` (the system report) goes at the top of events.log, before the timestamped lines.
-    func beginSession(label: String, header: String = "") {
+    func beginSession(label: String, date: Date = Date(), header: String = "") {
         guard enabled else { return }
-        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let dir = LogFolders.root.appendingPathComponent("\(stamp)-\(label)", isDirectory: true)
+        let dir = LogFolders.root.appendingPathComponent(LogFolders.sessionName(label: label, date: date), isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let frames = dir.appendingPathComponent("frames.csv"), events = dir.appendingPathComponent("events.log")
-        FileManager.default.createFile(atPath: frames.path, contents: Data(
-            "seq,arrival_ms,decode_ms,interp_wait_ms,interp_ms,arrival_to_mid_present_ms,arrival_to_real_present_ms,backend,discontinuity\n".utf8))
+        FileManager.default.createFile(
+            atPath: frames.path,
+            contents: Data(
+                "seq,arrival_ms,decode_ms,interp_wait_ms,interp_ms,arrival_to_mid_present_ms,arrival_to_real_present_ms,backend,discontinuity\n".utf8))
         FileManager.default.createFile(atPath: events.path, contents: header.isEmpty ? nil : Data((header + "\n").utf8))
         lock.lock()
         directory = dir; sessionStart = HostClock.now(); open = [:]; finished = []; recentlyFinished = []; pendingEvents = []
@@ -88,7 +89,7 @@ final class Diagnostics: @unchecked Sendable {
         r.stamps[stage.rawValue] = time
         open[sequence] = r
         if r.complete { finish(sequence) }
-        if open.count > 64 { // frames that never reached the screen (dropped): finish oldest
+        if open.count > 64 {  // frames that never reached the screen (dropped): finish oldest
             for key in open.keys.sorted().prefix(open.count - 32) { if let r = open.removeValue(forKey: key) { finished.append(r) } }
         }
         lock.unlock()
@@ -126,7 +127,7 @@ final class Diagnostics: @unchecked Sendable {
 
     private func flush(final: Bool = false) {
         lock.lock()
-        if final { finished.append(contentsOf: open.values); open = [:] } // include frames never presented
+        if final { finished.append(contentsOf: open.values); open = [:] }  // include frames never presented
         let rows = finished; finished = []
         let events = pendingEvents; pendingEvents = []
         let start = sessionStart, fh = framesHandle, eh = eventsHandle
@@ -146,10 +147,14 @@ final class Diagnostics: @unchecked Sendable {
         }
         let snap = Telemetry.shared.snapshot
         var lines = events
-        lines.append(String(format: "%10.1f stats src=%.1f disp=%.1f gen=%.1f hz=%.1f dec=%.2f interp=%.2f/%.2f a2p=%.1f drop=%llu rep=%llu fb=%llu lost=%llu kbps=%.0f be=%@ %@",
-            HostClock.milliseconds(from: start, to: HostClock.now()), snap.sourceFPS, snap.displayedFPS, snap.generatedFPS, snap.displayHz,
-            snap.decodeMsP50, snap.interpolateMsP50, snap.interpolateMsP99, snap.arrivalToPresentMsP50,
-            snap.droppedFrames, snap.repeatedFrames, snap.fallbackFrames, snap.packetsLost, snap.bitrateKbps, snap.interpolationBackend, GPUTiming.shared.summary))
+        lines.append(
+            String(
+                format:
+                    "%10.1f stats src=%.1f disp=%.1f gen=%.1f hz=%.1f dec=%.2f interp=%.2f/%.2f a2p=%.1f drop=%llu rep=%llu fb=%llu lost=%llu kbps=%.0f be=%@ %@",
+                HostClock.milliseconds(from: start, to: HostClock.now()), snap.sourceFPS, snap.displayedFPS, snap.generatedFPS, snap.displayHz,
+                snap.decodeMsP50, snap.interpolateMsP50, snap.interpolateMsP99, snap.arrivalToPresentMsP50,
+                snap.droppedFrames, snap.repeatedFrames, snap.fallbackFrames, snap.packetsLost, snap.bitrateKbps, snap.interpolationBackend,
+                GPUTiming.shared.summary))
         eh?.write(Data((lines.joined(separator: "\n") + "\n").utf8))
     }
 }

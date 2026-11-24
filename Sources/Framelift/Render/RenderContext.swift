@@ -23,13 +23,8 @@ enum ShaderLibrary {
     /// Where the last library came from (the Shaders folder path, or "inline").
     nonisolated(unsafe) private(set) static var loadedFrom = "none"
 
-    static func source() -> (String, String) {
-        var dirs: [URL] = []
-        #if SWIFT_PACKAGE
-        if let d = Bundle.module.url(forResource: "Shaders", withExtension: nil) { dirs.append(d) }
-        #endif
-        if let d = Bundle.main.url(forResource: "Shaders", withExtension: nil) { dirs.append(d) }
-        for dir in dirs {
+    static func source(in host: Bundle = .main) -> (String, String) {
+        if let dir = AppResources.url(forResource: "Shaders", withExtension: nil, in: host) {
             let files = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
                 .filter { $0.pathExtension == "metal" }
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }
@@ -103,7 +98,8 @@ final class RenderContext: @unchecked Sendable {
         let w = CVPixelBufferGetWidthOfPlane(buffer, plane), h = CVPixelBufferGetHeightOfPlane(buffer, plane)
         var cv: CVMetalTexture?
         guard CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, buffer, nil, format, w, h, plane, &cv) == kCVReturnSuccess,
-              let cv, let tex = CVMetalTextureGetTexture(cv) else { return nil }
+            let cv, let tex = CVMetalTextureGetTexture(cv)
+        else { return nil }
         return (tex, cv)
     }
 
@@ -111,18 +107,20 @@ final class RenderContext: @unchecked Sendable {
     func yuvTextures(_ buffer: CVPixelBuffer) -> (y: MTLTexture, c: MTLTexture, keep: [CVMetalTexture])? {
         let deep = !PixelFormats.is8Bit420(buffer)
         guard CVPixelBufferGetPlaneCount(buffer) == 2,
-              let (y, ky) = planeTexture(buffer, plane: 0, format: deep ? .r16Unorm : .r8Unorm),
-              let (c, kc) = planeTexture(buffer, plane: 1, format: deep ? .rg16Unorm : .rg8Unorm) else { return nil }
+            let (y, ky) = planeTexture(buffer, plane: 0, format: deep ? .r16Unorm : .r8Unorm),
+            let (c, kc) = planeTexture(buffer, plane: 1, format: deep ? .rg16Unorm : .rg8Unorm)
+        else { return nil }
         return (y, c, [ky, kc])
     }
 
     /// Writable view of one IOSurface plane (the texture retains the surface).
     func writablePlaneTexture(_ buffer: CVPixelBuffer, plane: Int, format: MTLPixelFormat) -> MTLTexture? {
         guard let surface = CVPixelBufferGetIOSurface(buffer)?.takeUnretainedValue() else { return nil }
-        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format,
-                                                         width: CVPixelBufferGetWidthOfPlane(buffer, plane),
-                                                         height: CVPixelBufferGetHeightOfPlane(buffer, plane),
-                                                         mipmapped: false)
+        let d = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: format,
+            width: CVPixelBufferGetWidthOfPlane(buffer, plane),
+            height: CVPixelBufferGetHeightOfPlane(buffer, plane),
+            mipmapped: false)
         d.usage = [.shaderRead, .shaderWrite]
         d.storageMode = .shared
         return device.makeTexture(descriptor: d, iosurface: surface, plane: plane)

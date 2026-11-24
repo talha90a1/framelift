@@ -1,0 +1,19 @@
+diff --git a/lib/src/remote/rudp.c b/lib/src/remote/rudp.c
+--- a/lib/src/remote/rudp.c
++++ b/lib/src/remote/rudp.c
+@@ -257,12 +257,11 @@
+     size_t msg_size = 0;
+     message.size = (0xC << 12) | alloc_size;
+     uint8_t data[message.data_size];
+-    const size_t buf_size = 16;
+-    uint8_t buf[buf_size];
++    uint8_t buf[16];
+     const uint8_t before_buf[8] = { 0x00, 0x00, 0x00, 0x10, 0x00, 0x0D, 0x00, 0x00 };
+-    chiaki_random_bytes_crypt(buf, buf_size);
++    chiaki_random_bytes_crypt(buf, sizeof(buf));
+     *(chiaki_unaligned_uint16_t *)(data) = htons(counter);
+     memcpy(data + 2, before_buf, sizeof(before_buf));
+-    memcpy(data + 10, buf, buf_size);
++    memcpy(data + 10, buf, sizeof(buf));
+     message.data = data;
+     rudp_message_serialize(&message, serialized_msg, &msg_size);

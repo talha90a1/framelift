@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Controller input (GameController, keyboard/mouse fallback) → ControllerSnapshot, sent on every change
-// and at `tickHz` as keepalive; PS5 feedback → controller (DualSense raw HID in Exact mode, else CoreHaptics).
 import AppKit
 import Combine
 import Foundation
 import GameController
 
 final class InputManager: ObservableObject, @unchecked Sendable {
-    @Published private(set) var controllerName: String?
+    @Published private(set) var controllerStatus: ControllerStatus?
+    var controllerName: String? { controllerStatus?.connected?.name }
 
     var sink: ControllerSink? {
         get { sinkLock.lock(); defer { sinkLock.unlock() }; return _sink }
@@ -15,8 +14,6 @@ final class InputManager: ObservableObject, @unchecked Sendable {
     }
 
     static let tickHz: Double = 200
-    static let mouseGain: Double = 1500       // stick units per mouse point per event
-    static let mouseHoldSeconds: Double = 0.03
     static let hapticsHoldSeconds: Double = 0.06
     /// Exact mode: console rumble is held back while PCM haptics arrived this recently.
     static let pcmActiveSeconds: Double = 0.25
@@ -32,6 +29,8 @@ final class InputManager: ObservableObject, @unchecked Sendable {
     private var observers: [NSObjectProtocol] = []
     private var timer: DispatchSourceTimer?
     private var controller: GCController?
+    private var watchedControllers: [GCController] = []
+    private var controllerConfirmed = false
     private var haptics: ControllerHaptics?
     /// Exact-mode raw HID output for the attached DualSense; nil in Compatible mode or after fallback.
     private var dualSense: DualSenseOutput?
@@ -57,17 +56,6 @@ final class InputManager: ObservableObject, @unchecked Sendable {
     private var lastTriggers: (typeLeft: UInt8, left: [UInt8], typeRight: UInt8, right: [UInt8])?
     private var lastHapticsHostTime: UInt64 = 0
 
-    private struct KeyboardState {
-        var keys = Set<UInt16>()
-        var leftMouse = false
-        var rightMouse = false
-        var mouseDelta = SIMD2<Double>(0, 0)
-        var mouseHostTime: UInt64 = 0
-    }
-    private var keyboard = KeyboardState()
-    /// Main-thread mirror of "a controller is connected", for the synchronous `handle(event:)` answer.
-    private var controllerConnectedMain = false
-
     init() {}
 
     deinit { timer?.cancel() }
@@ -80,21 +68,25 @@ final class InputManager: ObservableObject, @unchecked Sendable {
             guard !running else { return }
             running = true
             let center = NotificationCenter.default
-            observers.append(center.addObserver(forName: .GCControllerDidConnect, object: nil, queue: nil) { [weak self] _ in
-                self?.queue.async { self?.selectController() }
-            })
-            observers.append(center.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: nil) { [weak self] note in
-                let gone = note.object as? GCController
-                self?.queue.async { self?.controllerDisconnected(gone) }
-            })
-            observers.append(center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: nil) { [weak self] _ in
-                self?.queue.async { self?.applyLastTriggers(force: true) }
-                self?.queue.asyncAfter(deadline: .now() + Self.activationReapplySeconds) { self?.applyLastTriggers(force: true) }
-            })
-            observers.append(center.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: nil) { [weak self] _ in
-                self?.queue.async { self?.feedbackSettingMaybeChanged() }
-            })
-            selectController()
+            observers.append(
+                center.addObserver(forName: .GCControllerDidConnect, object: nil, queue: nil) { [weak self] _ in
+                    self?.queue.async { self?.refreshControllers() }
+                })
+            observers.append(
+                center.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: nil) { [weak self] note in
+                    let gone = note.object as? GCController
+                    self?.queue.async { self?.refreshControllers(excluding: gone) }
+                })
+            observers.append(
+                center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: nil) { [weak self] _ in
+                    self?.queue.async { self?.applyLastTriggers(force: true) }
+                    self?.queue.asyncAfter(deadline: .now() + Self.activationReapplySeconds) { self?.applyLastTriggers(force: true) }
+                })
+            observers.append(
+                center.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: nil) { [weak self] _ in
+                    self?.queue.async { self?.feedbackSettingMaybeChanged() }
+                })
+            refreshControllers()
 
             let t = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
             let interval = 1.0 / Self.tickHz
@@ -113,52 +105,124 @@ final class InputManager: ObservableObject, @unchecked Sendable {
             timer = nil
             observers.forEach { NotificationCenter.default.removeObserver($0) }
             observers.removeAll()
+            for pad in watchedControllers { pad.extendedGamepad?.valueChangedHandler = nil }
+            watchedControllers.removeAll()
+            controllerConfirmed = false
             detachController(clearFeedback: true, closeWait: 0.1)
+            publishController(nil)
             lastTriggers = nil
-            keyboard = KeyboardState()
             triggerFilter.reset()
-            send(ControllerSnapshot(), force: true) // leave the PS5 with a neutral pad
+            send(ControllerSnapshot(), force: true)  // leave the PS5 with a neutral pad
             lastSent = nil
         }
     }
 
     // MARK: Controller selection
 
-    private func rank(_ c: GCController) -> Int {
-        guard let pad = c.extendedGamepad else { return 0 }
-        if pad is GCDualSenseGamepad { return 4 }
-        if pad is GCDualShockGamepad { return 3 }
-        if pad is GCXboxGamepad { return 2 }
-        return 1
+    private func kind(of controller: GCController) -> ControllerIdentity.Kind {
+        guard let gamepad = controller.extendedGamepad else { return .other }
+        return switch gamepad {
+        case is GCDualSenseGamepad: .dualSense
+        case is GCDualShockGamepad: .dualShock
+        case is GCXboxGamepad: .xbox
+        default: .other
+        }
     }
 
-    private func selectController() {
+    private func rank(_ c: GCController) -> Int {
+        switch kind(of: c) {
+        case .dualSense: 4
+        case .dualShock: 3
+        case .xbox: 2
+        case .other: 1
+        }
+    }
+
+    @MainActor
+    func didUnpairDualSense(_ device: PairedDualSense, remaining: [PairedDualSense]) {
+        guard var status = controllerStatus, let last = status.lastConnected,
+            last.kind == .dualSense, last.name.caseInsensitiveCompare(device.name) == .orderedSame,
+            !remaining.contains(where: { $0.name.caseInsensitiveCompare(device.name) == .orderedSame })
+        else { return }
+
+        ControllerIdentity.clear()
+        status.lastConnected = nil
+        controllerStatus = status
+    }
+
+    private func publishController(_ connected: ControllerIdentity?) {
+        DispatchQueue.main.async {
+            let last = self.controllerStatus?.lastConnected ?? ControllerIdentity.stored()
+            if let connected, connected != last { connected.save() }
+            let status = ControllerStatus(connected: connected, lastConnected: connected ?? last)
+            if self.controllerStatus != status { self.controllerStatus = status }
+        }
+    }
+
+    private func refreshControllers(excluding disconnected: GCController? = nil) {
         guard running else { return }
-        let best = GCController.controllers()
-            .filter { $0.extendedGamepad != nil }
-            .max { rank($0) < rank($1) }
-        guard let best else {
-            if controller != nil { detachController(clearFeedback: false) }
+        let connected = GCController.controllers().filter { $0 !== disconnected && $0.extendedGamepad != nil }
+        if let controller, !connected.contains(where: { $0 === controller }) {
+            controllerConfirmed = false
+            detachController(clearFeedback: false)
+            send(ControllerSnapshot(), force: true)
+        }
+        let watching = controllerConfirmed ? connected.filter { $0 === controller } : connected
+        for pad in watchedControllers where !watching.contains(where: { $0 === pad }) {
+            pad.extendedGamepad?.valueChangedHandler = nil
+        }
+        for pad in watching where !watchedControllers.contains(where: { $0 === pad }) {
+            pad.handlerQueue = queue
+            pad.extendedGamepad?.valueChangedHandler = { [weak self, weak pad] profile, element in
+                guard let self, let pad else { return }
+                self.controllerChanged(pad, profile: profile, element: element)
+            }
+        }
+        watchedControllers = watching
+        if connected.isEmpty {
+            publishController(nil)
             return
         }
-        if best === controller { return }
-        detachController(clearFeedback: true)
-        attach(best)
+        guard !controllerConfirmed, let best = connected.max(by: { rank($0) < rank($1) }),
+            best !== controller
+        else { return }
+        select(best)
     }
 
-    private func controllerDisconnected(_ gone: GCController?) {
-        if gone == nil || gone === controller {
-            detachController(clearFeedback: false)
-            send(currentSnapshot(), force: true) // neutral: buttons released
-            selectController()
+    private func controllerChanged(_ candidate: GCController, profile: GCExtendedGamepad, element: GCControllerElement) {
+        guard running, watchedControllers.contains(where: { $0 === candidate }) else { return }
+        let buttonPressed =
+            (element as? GCControllerButtonInput)?.isPressed == true
+            && element !== profile.leftTrigger && element !== profile.rightTrigger
+        let dpadPressed =
+            element === profile.dpad
+            && (profile.dpad.xAxis.value != 0 || profile.dpad.yAxis.value != 0)
+        let pressed = buttonPressed || dpadPressed
+        if !controllerConfirmed, pressed {
+            controllerConfirmed = true
+            for pad in watchedControllers where pad !== candidate {
+                pad.extendedGamepad?.valueChangedHandler = nil
+            }
+            watchedControllers = [candidate]
+            if candidate !== controller {
+                select(candidate)
+                return
+            }
         }
+        if candidate === controller { sendIfChanged() }
+    }
+
+    private func select(_ candidate: GCController) {
+        if controller != nil {
+            detachController(clearFeedback: true)
+            send(ControllerSnapshot(), force: false)
+        }
+        attach(candidate)
     }
 
     private func attach(_ c: GCController) {
         controller = c
-        c.handlerQueue = queue
         c.playerIndex = .index1
-        keyboard = KeyboardState() // keys held when the pad appeared would never see their key-up
         if let pad = c.extendedGamepad {
             // PS / Create / Share must reach the PS5 instead of triggering macOS gestures
             // (Launchpad / screenshot / game overlay).
@@ -166,30 +230,26 @@ final class InputManager: ObservableObject, @unchecked Sendable {
                 button?.preferredSystemGestureState = .disabled
             }
             if let xbox = pad as? GCXboxGamepad { xbox.buttonShare?.preferredSystemGestureState = .disabled }
-            pad.valueChangedHandler = { [weak self] _, _ in self?.sendIfChanged() }
         }
         if let motion = c.motion, motion.sensorsRequireManualActivation {
             motion.sensorsActive = true
         }
+        touchSlots = [TouchSlot(), TouchSlot()]
+        triggerFilter.reset()
+        rumble = (0, 0)
+        hapticLevel = (0, 0)
+        sendIfChanged()
         hidTriggersFailed = false
-        let isDualSense = c.extendedGamepad is GCDualSenseGamepad
+        let kind = kind(of: c)
+        let isDualSense = kind == .dualSense
         attachedFeedbackMode = DualSenseFeedbackMode.stored()
         if isDualSense, attachedFeedbackMode == .exact {
             openDualSense()
         } else {
             useCompatibleFeedback(reason: isDualSense ? "setting" : nil)
         }
-        applyLastTriggers(force: true) // controller reconnected mid-session
-        touchSlots = [TouchSlot(), TouchSlot()]
-        triggerFilter.reset()
-        rumble = (0, 0)
-        hapticLevel = (0, 0)
-        let name = c.vendorName ?? c.productCategory
-        DispatchQueue.main.async {
-            self.controllerConnectedMain = true
-            self.controllerName = name
-        }
-        sendIfChanged()
+        applyLastTriggers(force: true)  // controller reconnected mid-session
+        publishController(ControllerIdentity(name: c.vendorName ?? c.productCategory, kind: kind))
     }
 
     private func detachController(clearFeedback: Bool, closeWait: TimeInterval = 0) {
@@ -201,7 +261,6 @@ final class InputManager: ObservableObject, @unchecked Sendable {
         dualSense?.close(clearFeedback: clearFeedback, wait: closeWait)
         dualSense = nil
         setSummary("none")
-        c.extendedGamepad?.valueChangedHandler = nil
         if let motion = c.motion, motion.sensorsRequireManualActivation { motion.sensorsActive = false }
         haptics?.set(left: 0, right: 0)
         haptics?.shutdown()
@@ -209,10 +268,6 @@ final class InputManager: ObservableObject, @unchecked Sendable {
         controller = nil
         touchSlots = [TouchSlot(), TouchSlot()]
         triggerFilter.reset()
-        DispatchQueue.main.async {
-            self.controllerConnectedMain = false
-            self.controllerName = nil
-        }
     }
 
     // MARK: Snapshot building
@@ -228,8 +283,6 @@ final class InputManager: ObservableObject, @unchecked Sendable {
         var s = ControllerSnapshot()
         if let pad = controller?.extendedGamepad {
             read(pad, into: &s)
-        } else {
-            readKeyboard(into: &s)
         }
         return s
     }
@@ -259,9 +312,10 @@ final class InputManager: ObservableObject, @unchecked Sendable {
         s.rightX = Self.axis(pad.rightThumbstick.xAxis.value)
         s.rightY = Self.axis(-pad.rightThumbstick.yAxis.value)
         // Jitter must not push a trigger release out of chiaki's history window (TriggerFilter.swift).
-        let triggers = triggerFilter.apply(l2: Self.trigger(pad.leftTrigger.value),
-                                           r2: Self.trigger(pad.rightTrigger.value),
-                                           now: HostClock.seconds(HostClock.now()))
+        let triggers = triggerFilter.apply(
+            l2: Self.trigger(pad.leftTrigger.value),
+            r2: Self.trigger(pad.rightTrigger.value),
+            now: HostClock.seconds(HostClock.now()))
         s.l2 = triggers.l2
         s.r2 = triggers.r2
 
@@ -306,9 +360,10 @@ final class InputManager: ObservableObject, @unchecked Sendable {
     static func sdlMotion(_ m: GCMotion) -> (gyro: SIMD3<Float>, accel: SIMD3<Float>) {
         let a: GCAcceleration
         if m.hasGravityAndUserAcceleration {
-            a = GCAcceleration(x: m.gravity.x + m.userAcceleration.x,
-                               y: m.gravity.y + m.userAcceleration.y,
-                               z: m.gravity.z + m.userAcceleration.z)
+            a = GCAcceleration(
+                x: m.gravity.x + m.userAcceleration.x,
+                y: m.gravity.y + m.userAcceleration.y,
+                z: m.gravity.z + m.userAcceleration.z)
         } else {
             a = m.acceleration
         }
@@ -381,8 +436,10 @@ final class InputManager: ObservableObject, @unchecked Sendable {
                     sumL += l * l
                     sumR += r * r
                 }
-                hapticLevel = (Float(min(1, 2 * (sumL / Double(frames)).squareRoot())),
-                               Float(min(1, 2 * (sumR / Double(frames)).squareRoot())))
+                hapticLevel = (
+                    Float(min(1, 2 * (sumL / Double(frames)).squareRoot())),
+                    Float(min(1, 2 * (sumR / Double(frames)).squareRoot()))
+                )
                 lastHapticsHostTime = HostClock.now()
                 updateHaptics()
             case let .triggers(typeLeft, left, typeRight, right):
@@ -425,7 +482,8 @@ final class InputManager: ObservableObject, @unchecked Sendable {
 
     private func updateHaptics() {
         if hapticLevel != (0, 0),
-           HostClock.seconds(HostClock.now() &- lastHapticsHostTime) > Self.hapticsHoldSeconds {
+            HostClock.seconds(HostClock.now() &- lastHapticsHostTime) > Self.hapticsHoldSeconds
+        {
             hapticLevel = (0, 0)
         }
         guard let dualSense else {
@@ -456,7 +514,8 @@ final class InputManager: ObservableObject, @unchecked Sendable {
     /// Handler queue only. Applies a changed Exact/Compatible setting to the connected DualSense.
     private func feedbackSettingMaybeChanged() {
         guard running, let c = controller, c.extendedGamepad is GCDualSenseGamepad,
-              DualSenseFeedbackMode.stored() != attachedFeedbackMode else { return }
+            DualSenseFeedbackMode.stored() != attachedFeedbackMode
+        else { return }
         detachController(clearFeedback: true)
         attach(c)
     }
@@ -485,7 +544,7 @@ final class InputManager: ObservableObject, @unchecked Sendable {
                 self.applyLastTriggers(force: true)
             }
         }
-        output.clearTriggers() // whatever GameController or an earlier app left on the pad
+        output.clearTriggers()  // whatever GameController or an earlier app left on the pad
         dualSense = output
         haptics = nil
         setSummary(output.summary)
@@ -505,93 +564,6 @@ final class InputManager: ObservableObject, @unchecked Sendable {
         if reason != nil { Diagnostics.shared.event("dualsense feedback: \(text)") }
     }
 
-    // MARK: Keyboard / mouse fallback
-
-    /// Main thread (stream view). Returns true when the event was consumed by the fallback mapping.
-    func handle(event: NSEvent) -> Bool {
-        guard !controllerConnectedMain else { return false }
-        switch event.type {
-        case .keyDown, .keyUp:
-            if event.modifierFlags.contains(.command) { return false }
-            let code = event.keyCode
-            guard Self.mappedKeys.contains(code) else { return false }
-            let down = event.type == .keyDown
-            if down && event.isARepeat { return true }
-            queue.async { [self] in
-                if down { keyboard.keys.insert(code) } else { keyboard.keys.remove(code) }
-                sendIfChanged()
-            }
-            return true
-        case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp:
-            let type = event.type
-            queue.async { [self] in
-                switch type {
-                case .leftMouseDown: keyboard.leftMouse = true
-                case .leftMouseUp: keyboard.leftMouse = false
-                case .rightMouseDown: keyboard.rightMouse = true
-                default: keyboard.rightMouse = false
-                }
-                sendIfChanged()
-            }
-            return true
-        case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
-            let delta = SIMD2<Double>(Double(event.deltaX), Double(event.deltaY)) // deltaY: +down already
-            queue.async { [self] in
-                keyboard.mouseDelta = delta
-                keyboard.mouseHostTime = HostClock.now()
-                sendIfChanged()
-            }
-            return true
-        default:
-            return false
-        }
-    }
-
-    private enum Key {
-        static let a: UInt16 = 0, s: UInt16 = 1, d: UInt16 = 2, h: UInt16 = 4, g: UInt16 = 5
-        static let z: UInt16 = 6, x: UInt16 = 7, v: UInt16 = 9, b: UInt16 = 11, q: UInt16 = 12
-        static let w: UInt16 = 13, e: UInt16 = 14, r: UInt16 = 15, y: UInt16 = 16
-        static let i: UInt16 = 34, p: UInt16 = 35, ret: UInt16 = 36, l: UInt16 = 37, j: UInt16 = 38, k: UInt16 = 40
-        static let space: UInt16 = 49, delete: UInt16 = 51
-        static let left: UInt16 = 123, right: UInt16 = 124, down: UInt16 = 125, up: UInt16 = 126
-    }
-
-    private static let keyButtons: [UInt16: ControllerSnapshot.Buttons] = [
-        Key.space: .cross, Key.q: .circle, Key.e: .square, Key.r: .triangle,
-        Key.i: .up, Key.j: .left, Key.k: .down, Key.l: .right,
-        Key.z: .l1, Key.x: .r1, Key.v: .l3, Key.b: .r3,
-        Key.ret: .options, Key.delete: .share, Key.p: .ps, Key.y: .touchpad,
-    ]
-
-    private static let mappedKeys: Set<UInt16> = Set(keyButtons.keys).union([
-        Key.w, Key.a, Key.s, Key.d, Key.g, Key.h, Key.left, Key.right, Key.up, Key.down,
-    ])
-
-    private func readKeyboard(into s: inout ControllerSnapshot) {
-        let keys = keyboard.keys
-        var b: ControllerSnapshot.Buttons = []
-        for (code, flag) in Self.keyButtons where keys.contains(code) { b.insert(flag) }
-        s.buttons = b
-
-        func pair(_ neg: UInt16, _ pos: UInt16) -> Int16 {
-            (keys.contains(pos) ? 32767 : 0) - (keys.contains(neg) ? 32767 : 0)
-        }
-        s.leftX = pair(Key.a, Key.d)
-        s.leftY = pair(Key.w, Key.s)
-
-        var rx = pair(Key.left, Key.right), ry = pair(Key.up, Key.down)
-        if rx == 0 && ry == 0,
-           HostClock.seconds(HostClock.now() &- keyboard.mouseHostTime) < Self.mouseHoldSeconds {
-            func clampStick(_ v: Double) -> Int16 { Int16(min(max(v, -32768), 32767)) }
-            rx = clampStick(keyboard.mouseDelta.x * Self.mouseGain)
-            ry = clampStick(keyboard.mouseDelta.y * Self.mouseGain)
-        }
-        s.rightX = rx
-        s.rightY = ry
-
-        s.l2 = (keys.contains(Key.g) || keyboard.rightMouse) ? 255 : 0
-        s.r2 = (keys.contains(Key.h) || keyboard.leftMouse) ? 255 : 0
-    }
 }
 
 /// Whether finger positions on the DualSense touchpad are sent to the PS5 (the click always is).
@@ -599,7 +571,7 @@ enum TouchpadMode: String, CaseIterable, Identifiable {
     case clickOnly, touchAndClick
     var id: String { rawValue }
     static let defaultsKey = "framelift.touchpad.v1"
-    var title: String { self == .clickOnly ? "Click only (recommended)" : "Touch + click" }
+    var title: String { self == .clickOnly ? "Click only" : "Touch + click" }
     static func stored(_ defaults: UserDefaults = .standard) -> TouchpadMode {
         defaults.string(forKey: defaultsKey).flatMap(TouchpadMode.init(rawValue:)) ?? .clickOnly
     }

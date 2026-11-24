@@ -1,36 +1,16 @@
 name: Feature request
-description: Suggest an improvement or a new feature.
-labels: ["enhancement"]
+description: Request a change to Framelift.
+labels: [enhancement]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Please check open issues first to see if someone already asked for this.
-        Internet play, 720p mode and HDR are known gaps. See the README's Limitations section.
-
   - type: textarea
-    id: problem
+    id: request
     attributes:
-      label: Problem
-      description: What are you trying to do, and what gets in the way?
+      label: What should Framelift do?
+      description: Describe what you need and why.
     validations:
       required: true
-
-  - type: textarea
-    id: proposal
-    attributes:
-      label: Proposed solution
-      description: What should Framelift do?
-    validations:
-      required: true
-
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: Alternatives you considered
-
   - type: textarea
     id: setup
     attributes:
-      label: Your setup
-      description: Mac model, display and network, if they matter for this request.
+      label: Setup
+      description: Include your Mac, display or network if relevant.
