@@ -68,7 +68,6 @@ final class InputManager: ObservableObject {
     var sink: ControllerSink?
     func start(); func stop()
     func apply(_ feedback: ControllerFeedbackEvent)
-    func handle(event: NSEvent) -> Bool                  // keyboard/mouse fallback from the stream view
 }
 ```
 

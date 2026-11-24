@@ -10,14 +10,15 @@ enum SystemReport {
     /// Main thread (NSScreen). The stream target is the chosen display, else the main window's screen.
     @MainActor
     static func make(settings: StreamSettings, controller: String?, controllerFeedback: String) -> String {
-        let target = SettingsStore.resolvedDisplayID(settings.targetDisplayID, available: DisplayCatalog.displays().map(\.id))
+        let target =
+            SettingsStore.resolvedDisplayID(settings.targetDisplayID, available: DisplayCatalog.displays().map(\.id))
             ?? (NSApp.mainWindow?.screen ?? NSScreen.main).flatMap(DisplayCatalog.displayID(of:))
         var lines = ["==== Framelift system report ===="]
         lines += environmentLines()
         lines.append("Displays:")
         lines += NSScreen.screens.map { "  " + displayLine($0, target: target) }
         lines.append("Mac internet: \(primaryInterface())")
-        lines.append("Controller: \(controller ?? "none (keyboard fallback)")")
+        lines.append("Controller: \(controller ?? "none")")
         lines.append("Controller feedback: \(controllerFeedback) (setting: \(DualSenseFeedbackMode.stored().title))")
         lines.append("Settings:")
         lines += settingsLines(settings).map { "  " + $0 }
@@ -81,7 +82,8 @@ enum SystemReport {
         for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
             let ifa = entry.pointee
             guard ifa.ifa_flags & UInt32(IFF_UP) != 0, let addr = ifa.ifa_addr, let mask = ifa.ifa_netmask,
-                  addr.pointee.sa_family == sa_family_t(AF_INET) else { continue }
+                addr.pointee.sa_family == sa_family_t(AF_INET)
+            else { continue }
             let ip = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
             let netmask = mask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
             guard netmask != 0, ip & netmask == target.s_addr & netmask else { continue }
@@ -104,8 +106,8 @@ enum SystemReport {
     /// Kind of the interface carrying the default IPv4 route ("Wi-Fi (en0)"). Never the SSID or BSSID.
     static func primaryInterface() -> String {
         guard let store = SCDynamicStoreCreate(nil, "Framelift" as CFString, nil, nil),
-              let global = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
-              let bsd = global["PrimaryInterface"] as? String
+            let global = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
+            let bsd = global["PrimaryInterface"] as? String
         else { return "no default route" }
         let all = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] ?? []
         guard let interface = all.first(where: { SCNetworkInterfaceGetBSDName($0) as String? == bsd }) else { return bsd }
