@@ -34,14 +34,7 @@ cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"
 cp -R licenses "$APP/Contents/Resources/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-# SwiftPM resource bundle (Render/Shaders). Bundle.module checks Bundle.main.resourceURL first,
-# so Contents/Resources is where it has to live inside the app.
-RESOURCE_BUNDLE="$BIN_DIR/Framelift_Framelift.bundle"
-if [[ -d "$RESOURCE_BUNDLE" ]]; then
-  cp -R "$RESOURCE_BUNDLE" "$APP/Contents/Resources/"
-else
-  echo "warning: $RESOURCE_BUNDLE not found; runtime shader loading will fail unless shaders are inline" >&2
-fi
+cp -R Sources/Framelift/Render/Shaders "$APP/Contents/Resources/"
 
 # chiaki and its deps are static archives; flag any dylib outside the OS that the app would need at runtime.
 NON_SYSTEM_LIBS=$(otool -L "$APP/Contents/MacOS/Framelift" | awk 'NR>1 {print $1}' | grep -vE '^(/System/|/usr/lib/|@rpath/libswift)' || true)

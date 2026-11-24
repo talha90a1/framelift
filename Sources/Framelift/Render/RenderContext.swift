@@ -23,13 +23,8 @@ enum ShaderLibrary {
     /// Where the last library came from (the Shaders folder path, or "inline").
     nonisolated(unsafe) private(set) static var loadedFrom = "none"
 
-    static func source() -> (String, String) {
-        var dirs: [URL] = []
-        #if SWIFT_PACKAGE
-        if let d = Bundle.module.url(forResource: "Shaders", withExtension: nil) { dirs.append(d) }
-        #endif
-        if let d = Bundle.main.url(forResource: "Shaders", withExtension: nil) { dirs.append(d) }
-        for dir in dirs {
+    static func source(in host: Bundle = .main) -> (String, String) {
+        if let dir = AppResources.url(forResource: "Shaders", withExtension: nil, in: host) {
             let files = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
                 .filter { $0.pathExtension == "metal" }
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }
