@@ -44,5 +44,13 @@
 	<string>NSApplication</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/talha90a1/framelift/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>dmItHkSt7+OArg/BiEJ9I/j9mJRGPjMFJTTFcQbN3ns=</string>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 </dict>
 </plist>

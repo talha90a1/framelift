@@ -29,7 +29,9 @@
 You need an Apple Silicon Mac (M1 or newer), macOS 26 or later, and a game controller. Use macOS 27 for 1080p frame generation.
 
 1. Download `Framelift-<version>-macOS-arm64.zip` from [Releases](../../releases/latest), unzip it and move **Framelift.app** to Applications.
-2. Open Framelift. On first launch, approve it under **System Settings › Privacy & Security › Open Anyway**. The app is ad hoc signed and unnotarized.
+2. Open Framelift. If macOS blocks the first launch, approve it under **System Settings › Privacy & Security › Open Anyway**.
+
+Use **Framelift › Check for Updates…** to check now. Manage automatic checks and installs in **Settings › Updates**.
 
 ## First run
 

@@ -24,7 +24,7 @@ final class AppModel: ObservableObject {
 
     let consoles = ConsoleStore.shared
     let input = InputManager()
-    let updates = UpdateChecker()
+    let updates = Updater()
     let coordinator: StreamCoordinator
     private let store = SettingsStore()
     private var screenObserver: NSObjectProtocol?
@@ -50,7 +50,7 @@ final class AppModel: ObservableObject {
     func appDidLaunch() {
         input.start()
         Task { await discover() }
-        updates.checkAfterLaunch()
+        updates.start()
     }
 
     /// Cmd+Q while streaming: stop the session cleanly (so the PS5 sees a disconnect) before exiting.

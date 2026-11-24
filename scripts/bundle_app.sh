@@ -37,20 +37,26 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 cp -R Sources/Framelift/Render/Shaders "$APP/Contents/Resources/"
 cp Sources/Framelift/App/DualSensePairing.usdz "$APP/Contents/Resources/"
 
+FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+mkdir -p "$APP/Contents/Frameworks"
+ditto "$BIN_DIR/Sparkle.framework" "$FRAMEWORK"
+rm -rf "$FRAMEWORK/Versions/B/XPCServices" "$FRAMEWORK/XPCServices"
+
 # chiaki and its deps are static archives; flag any dylib outside the OS that the app would need at runtime.
-NON_SYSTEM_LIBS=$(otool -L "$APP/Contents/MacOS/Framelift" | awk 'NR>1 {print $1}' | grep -vE '^(/System/|/usr/lib/|@rpath/libswift)' || true)
+NON_SYSTEM_LIBS=$(otool -L "$APP/Contents/MacOS/Framelift" | awk 'NR>1 {print $1}' | grep -vE '^(/System/|/usr/lib/|@rpath/libswift|@rpath/Sparkle.framework/)' || true)
 if [[ -n "$NON_SYSTEM_LIBS" ]]; then
   echo "warning: the app links non-system dylibs (it will only run on machines that have them):" >&2
   echo "$NON_SYSTEM_LIBS" >&2
 fi
 
-# Sign with a stable identity so the Keychain (and Local Network/Automation consents) keep trusting the
-# app across rebuilds; ad-hoc signatures change every build and re-trigger the prompts. Override with
-# FRAMELIFT_SIGN_IDENTITY; falls back to ad-hoc when no Apple Development identity exists.
-SIGN_ID="${FRAMELIFT_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | sed -nE 's/.*"(Apple Development: [^"]+)".*/\1/p' | head -1)}"
-SIGN_ID="${SIGN_ID:--}"
-codesign --force --deep -s "$SIGN_ID" --entitlements Resources/Framelift.entitlements "$APP"
-codesign --verify --strict "$APP"
+release_id=$(security find-identity -p codesigning 2>/dev/null | awk '/"Framelift Release"/ { print $2; exit }')
+dev_id=$(security find-identity -v -p codesigning 2>/dev/null | sed -nE 's/.*"(Apple Development: [^"]+)".*/\1/p' | head -1)
+SIGN_ID="${FRAMELIFT_SIGN_IDENTITY:-${release_id:-${dev_id:--}}}"
+codesign --force -s "$SIGN_ID" "$FRAMEWORK/Versions/B/Autoupdate"
+codesign --force -s "$SIGN_ID" "$FRAMEWORK/Versions/B/Updater.app"
+codesign --force -s "$SIGN_ID" "$FRAMEWORK"
+codesign --force -s "$SIGN_ID" --entitlements Resources/Framelift.entitlements "$APP"
+codesign --verify --deep --strict "$APP"
 echo "signed with: ${SIGN_ID}"
 
 # --install: copy to /Applications (stable location; same signing identity keeps Keychain access).
