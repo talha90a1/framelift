@@ -58,13 +58,15 @@ final class StreamCoordinator: ObservableObject {
     private var activity: NSObjectProtocol?
     /// Bumped per session instance so late events from a replaced or stopped session are ignored.
     private var generation = 0
-    private var retriesLeft = StreamCoordinator.maxRetries
+    private var retriesLeft = SessionRetryPolicy.maxRetries
     private var retryResetWork: DispatchWorkItem?
-    /// Automatic reconnects allowed before a transient failure is reported.
-    private static let maxRetries = 1
-    private static let retryDelay: TimeInterval = 1.5
-    /// A stream that stays up this long earns its automatic retry back.
+    /// The current attempt reached `.connected`.
+    private var attemptConnected = false
+    /// When the last stream from this Mac ended: a PS5 "in use" soon after most likely means that session.
+    private var lastStreamEnd: UInt64?
+    /// A stream that stays up this long earns its automatic retries back.
     private static let stableAfter: TimeInterval = 30
+    private static let recentEnd: TimeInterval = 30
 
     init(input: InputManager) {
         self.input = input
@@ -79,7 +81,7 @@ final class StreamCoordinator: ObservableObject {
         self.target = target
         self.settings = settings
         debugLogs = DebugLogs.stored()
-        retriesLeft = Self.maxRetries
+        retriesLeft = SessionRetryPolicy.maxRetries
         phase = .connecting("Connecting to \(target.title)…")
         beginTrace()
 
@@ -125,10 +127,11 @@ final class StreamCoordinator: ObservableObject {
         settings.showOverlay = newSettings.showOverlay
         settings.keepStaticOverlays = newSettings.keepStaticOverlays
         settings.blendFallback = newSettings.blendFallback
+        settings.sharpness = newSettings.sharpness
         engine?.update(settings: settings)
         window?.overlayVisible = newSettings.showOverlay
         engine?.showFPSCounter = newSettings.showOverlay
-        Diagnostics.shared.event("live settings sceneCutFallback=\(settings.sceneCutFallback) keepStatic=\(settings.keepStaticOverlays) blendFallback=\(settings.blendFallback)")
+        Diagnostics.shared.event("live settings sceneCutFallback=\(settings.sceneCutFallback) keepStatic=\(settings.keepStaticOverlays) blendFallback=\(settings.blendFallback) sharpness=\(settings.sharpness)")
     }
 
     // MARK: Pipeline
@@ -137,6 +140,7 @@ final class StreamCoordinator: ObservableObject {
         guard case .console(let console, let credentials) = target, let engine else { return }
         generation += 1
         let generation = generation
+        attemptConnected = false
 
         let session = RemotePlaySession(host: console.host, credentials: credentials, settings: settings)
         session.onEvent = { [weak self] event in
@@ -186,6 +190,7 @@ final class StreamCoordinator: ObservableObject {
         switch event {
         case .connected:
             phase = .streaming
+            attemptConnected = true
             scheduleRetryReset()
         case .loginPinRequired:
             window?.promptForLoginPin { [weak self] pin in
@@ -193,8 +198,13 @@ final class StreamCoordinator: ObservableObject {
                 if let pin, !pin.isEmpty { session.submitLoginPin(pin) } else { self.stop() }
             }
         case .quit(let reason, let message):
+            let recentlyEnded = lastStreamEnd.map {
+                HostClock.seconds(HostClock.now() - $0) < Self.recentEnd
+            } ?? false
+            let ourSessionLikely = retriesLeft < SessionRetryPolicy.maxRetries || recentlyEnded
             sessionEnded(
-                transient: SessionRetryPolicy.isTransient(quitReason: reason),
+                transient: SessionRetryPolicy.isTransient(quitReason: reason, ourSessionLikely: ourSessionLikely),
+                consoleHoldsSession: SessionRetryPolicy.consoleHoldsSession(quitReason: reason),
                 alert: EndAlert(
                     title: "Stream ended",
                     message: message.isEmpty ? SessionMessages.quitMessage(reason: reason) : message
@@ -213,17 +223,27 @@ final class StreamCoordinator: ObservableObject {
         }
     }
 
-    private func sessionEnded(transient: Bool, alert: EndAlert, generation: Int) {
+    private func sessionEnded(transient: Bool, consoleHoldsSession: Bool = false, alert: EndAlert, generation: Int) {
         guard generation == self.generation, isActive, phase != .stopping else { return }
         guard transient, retriesLeft > 0 else {
             teardown(alert: alert, completion: nil)
             return
         }
+        let retry = SessionRetryPolicy.maxRetries - retriesLeft + 1
         retriesLeft -= 1
         retryResetWork?.cancel()
-        Diagnostics.shared.event("transient failure, reconnecting: \(alert.message)")
-        phase = .connecting("Connection lost, reconnecting…")
+        let wait = SessionRetryPolicy.wait(consoleHoldsSession: consoleHoldsSession, wasPlaying: attemptConnected)
+        let delay = SessionRetryPolicy.seconds(wait, retry: retry)
+        let count = "\(retry)/\(SessionRetryPolicy.maxRetries)"
+        Diagnostics.shared.event("transient failure, reconnecting in \(Int(delay)) s (\(wait), \(count)): \(alert.message)")
+        let status = switch wait {
+        case .start: "Connection lost, reconnecting (\(count))…"
+        case .inUse: "The PS5 is still closing the last session. Reconnecting in \(Int(delay)) s (\(count))…"
+        case .afterLive: "Connection lost. Reconnecting in \(Int(delay)) s, once the PS5 has closed the session (\(count))…"
+        }
+        phase = .connecting(status)
         self.generation += 1 // silence the dying session
+        let waiting = self.generation
         let old = source
         source = nil
         input.sink = nil
@@ -232,8 +252,8 @@ final class StreamCoordinator: ObservableObject {
         latencyProbe = nil
         LatencyProbe.status.set(nil)
         Self.offMain({ old?.stop() }) { [weak self] in
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.retryDelay) { [weak self] in
-                guard let self, case .connecting = self.phase else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.generation == waiting, case .connecting = self.phase else { return }
                 self.engine?.reset()
                 self.startSource()
             }
@@ -242,7 +262,7 @@ final class StreamCoordinator: ObservableObject {
 
     private func scheduleRetryReset() {
         retryResetWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.retriesLeft = Self.maxRetries }
+        let work = DispatchWorkItem { [weak self] in self?.retriesLeft = SessionRetryPolicy.maxRetries }
         retryResetWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.stableAfter, execute: work)
     }
@@ -254,6 +274,7 @@ final class StreamCoordinator: ObservableObject {
         }
         phase = .stopping
         generation += 1
+        lastStreamEnd = HostClock.now()
         retryResetWork?.cancel()
         input.sink = nil
         latencyProbe?.stop()
@@ -307,8 +328,9 @@ final class StreamCoordinator: ObservableObject {
         let s = settings
         if case .console(let console, _) = target {
             d.event("target ps5 \(console.nickname) host=\(console.host)")
+            d.event("console link: \(SystemReport.consoleLink(host: console.host))")
         }
-        d.event("settings \(s.width)x\(s.height)@\(s.streamFPS) bitrate=\(s.bitrateKbps)kbps codec=\(s.codec.label) fullscreen=\(s.fullscreen) sceneCutFallback=\(s.sceneCutFallback)")
+        d.event("settings \(s.width)x\(s.height)@\(s.streamFPS) bitrate=\(s.bitrateKbps)kbps codec=\(s.codec.label) fullscreen=\(s.fullscreen) sceneCutFallback=\(s.sceneCutFallback) sharpness=\(s.sharpness)")
         d.event("frame generation keepWarm=\(s.keepLLFIWarm) keepStatic=\(s.keepStaticOverlays) blendFallback=\(s.blendFallback) buffers=\(DisplayBuffering.stored().drawableCount)")
         if let screen = window?.screen {
             d.event("display \(screen.localizedName) \(DisplayInfo.hzText(Double(screen.maximumFramesPerSecond))) Hz frame=\(screen.frame)")

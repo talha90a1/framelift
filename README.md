@@ -31,7 +31,7 @@ Framelift is a native PS5 Remote Play app for Apple Silicon. Most PS5 games stre
 - **Low lag.** Connects to the PS5 directly: no capture card, no screen capture of another app.
 - **Any screen.** Built-in display, external monitor or a TV over HDMI, paced to its refresh rate.
 - **DualSense** buttons, touchpad, motion, rumble, haptics and adaptive triggers.
-- **Private.** Pairing and streaming stay on your network; pairing keys stay on your Mac.
+- **Private.** Pairing and streaming stay on your network; pairing keys stay on your Mac. The only other request is an update check on GitHub at launch, which you can turn off in Settings.
 
 
 ## Install
@@ -54,7 +54,7 @@ A wired connection gives the steadiest picture and the lowest lag. From best to 
 2. **Both on Ethernet.** Plug the PS5 and the Mac into your router.
 3. **Wi-Fi.** Works, but expect occasional hiccups. Use 5 GHz or 6 GHz and keep the router close.
 
-The bitrate defaults to 30 Mbps, which suits most Wi-Fi. On a cable, raise it to 50 Mbps in Settings for the sharpest picture.
+The bitrate defaults to 30 Mbps, which suits most Wi-Fi. On a cable, raise it to 50–100 Mbps in Settings for the sharpest picture.
 
 ## Settings
 

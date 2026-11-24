@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.0.1 - 2026-11-24
+
+### Added
+
+- Settings › Picture › Sharpness (0 to 1.5, default 0.5) for screens larger than 1080p.
+- Update check: at launch Framelift asks GitHub for the latest release and shows a bar with a link when a newer one is out. Framelift › Check for Updates… checks by hand; Settings › Updates turns the launch check off. Nothing is downloaded.
+
+### Changed
+
+- Stronger upscale sharpening: the old one was clamped to the nearest 2x2 pixels, which cancelled most of it.
+- The bitrate goes up to 100 Mbps (was 50).
+- Reconnecting after a dropped stream waits for the PS5 to release the old session (20, 30, then 40 s, up to 3 tries) instead of one retry after 1.5 s, which the PS5 refused as "in use". A PS5 that says it is still in use right after a stream from this Mac counts as a retry too (10, 20, 40 s).
+- The stream socket asks for a 4 MiB receive buffer (1 MB if refused), so bursts at high bitrates don't overflow it.
+
 ## 1.0.0 - 2026-11-23
 
 First public version.

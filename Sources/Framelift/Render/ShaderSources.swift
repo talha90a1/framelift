@@ -128,8 +128,14 @@ static inline float4 present_catmull_rom_weights(float f)
                   0.5 * f3 - 0.5 * f2);
 }
 
-// Upscaler: luma is Catmull-Rom bicubic + CAS-style sharpening with an anti-ringing clamp to the
-// nearest 2x2 texels; chroma is bilinear (it carries little detail at 4:2:0).
+static inline float4 present_bspline_weights(float f)
+{
+    const float f2 = f * f, f3 = f2 * f, g = 1.0 - f;
+    return float4(g * g * g, 3.0 * f3 - 6.0 * f2 + 4.0, -3.0 * f3 + 3.0 * f2 + 3.0 * f + 1.0, f3) / 6.0;
+}
+
+// Upscaler: Catmull-Rom luma held to the nearest 2x2 texels, plus an unsharp mask against a B-spline
+// blur held to the 4x4 range. Chroma is bilinear.
 fragment float4 present_sharp_fragment(PresentVertexOut in [[stage_in]],
                                        texture2d<float> lumaTexture [[texture(0)]],
                                        texture2d<float> chromaTexture [[texture(1)]],
@@ -155,15 +161,20 @@ fragment float4 present_sharp_fragment(PresentVertexOut in [[stage_in]],
     const float4 wy = present_catmull_rom_weights(f.y);
     const float lz = wy.x * dot(r0, wx) + wy.y * dot(r1, wx) + wy.z * dot(r2, wx) + wy.w * dot(r3, wx);
 
-    // Nearest 2x2 texels: bilinear reference, and the range for anti-ringing.
     const float a = r1.y, b = r1.z, cc = r2.y, d = r2.z;
-    const float bil = mix(mix(a, b, f.x), mix(cc, d, f.x), f.y);
     const float mn = min(min(a, b), min(cc, d));
     const float mx = max(max(a, b), max(cc, d));
+    const float held = clamp(lz, mn, mx);
+
+    const float4 bx = present_bspline_weights(f.x);
+    const float4 by = present_bspline_weights(f.y);
+    const float blur = by.x * dot(r0, bx) + by.y * dot(r1, bx) + by.z * dot(r2, bx) + by.w * dot(r3, bx);
+    const float4 lo = min(min(r0, r1), min(r2, r3)), hi = max(max(r0, r1), max(r2, r3));
+    const float mn4 = min(min(lo.x, lo.y), min(lo.z, lo.w));
+    const float mx4 = max(max(hi.x, hi.y), max(hi.z, hi.w));
     // CAS amplitude: 1 in flat or mid-contrast areas, falling to 0 near clipping / hard edges.
-    const float amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));
-    float luma = lz + colour.params.x * amp * (lz - bil);
-    luma = clamp(luma, mn, mx);
+    const float amp = sqrt(saturate(min(mn4, 1.0 - mx4) / max(mx4, 1e-4)));
+    const float luma = clamp(held + colour.params.x * amp * (held - blur), mn4, mx4);
 
     return float4(present_yuv_to_rgb(luma, chromaTexture.sample(s, in.uv).rg, colour), 1.0);
 }

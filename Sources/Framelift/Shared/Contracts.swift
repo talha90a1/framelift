@@ -64,10 +64,11 @@ struct StreamSettings: Codable, Equatable, Sendable {
     var keepStaticOverlays: Bool = true
     /// 50/50 blend shown when Apple's frame misses its deadline; off repeats the real frame instead.
     var blendFallback: Bool = true
+    var sharpness: Double = StreamSettingsLimits.defaultSharpness
 
     enum CodingKeys: String, CodingKey {
         case width, height, streamFPS, bitrateKbps, codec, targetDisplayID, fullscreen, sceneCutFallback
-        case showOverlay, keepLLFIWarm, keepStaticOverlays, blendFallback
+        case showOverlay, keepLLFIWarm, keepStaticOverlays, blendFallback, sharpness
     }
 }
 
@@ -88,6 +89,7 @@ extension StreamSettings {
         keepLLFIWarm = try c.decodeIfPresent(Bool.self, forKey: .keepLLFIWarm) ?? keepLLFIWarm
         keepStaticOverlays = try c.decodeIfPresent(Bool.self, forKey: .keepStaticOverlays) ?? keepStaticOverlays
         blendFallback = try c.decodeIfPresent(Bool.self, forKey: .blendFallback) ?? blendFallback
+        sharpness = try c.decodeIfPresent(Double.self, forKey: .sharpness) ?? sharpness
     }
 }
 

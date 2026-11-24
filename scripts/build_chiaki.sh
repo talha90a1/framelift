@@ -42,7 +42,7 @@ else echo "0002 metadata patch does not fit this chiaki-ng revision" >&2; exit 1
 for P in "$ROOT"/scripts/patches/*.patch(N); do
   if git -C "$CHIAKI" apply -R --check "$P" 2>/dev/null; then echo "${P:t} already applied";
   elif git -C "$CHIAKI" apply --check "$P" 2>/dev/null; then git -C "$CHIAKI" apply "$P"; echo "applied ${P:t}";
-  else echo "${P:t} does not fit this chiaki-ng revision" >&2; exit 1; fi
+  else echo "${P:t} does not fit this chiaki-ng revision; if a patch changed, reset with: git -C third_party/chiaki-ng checkout -f -- ." >&2; exit 1; fi
 done
 [[ -d "$ROOT/.venv" ]] || { python3 -m venv "$ROOT/.venv"; "$ROOT/.venv/bin/pip" install -q protobuf grpcio-tools; }
 export PATH="$ROOT/.venv/bin:$PATH"

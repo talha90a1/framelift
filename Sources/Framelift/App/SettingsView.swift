@@ -5,8 +5,10 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var updates: UpdateChecker
+    @AppStorage(UpdateChecks.defaultsKey) private var checkForUpdates = true
     @AppStorage(TouchpadMode.defaultsKey) private var touchpad: TouchpadMode = .clickOnly
-    @AppStorage(DebugLogs.defaultsKey) private var debugLogs = false
+    @AppStorage(DebugLogs.defaultsKey) private var debugLogs = DebugLogs.enabledByDefault
     @AppStorage(DisplayBuffering.defaultsKey) private var buffering: DisplayBuffering = .triple
     @State private var hasSessionLogs = false
 
@@ -36,7 +38,20 @@ struct SettingsView: View {
                             .frame(width: 64, alignment: .trailing)
                     }
                 }
-                Text("1080p, 30 fps from the PS5, shown at 60 fps with Apple's frame interpolation. 30 Mbps (default) suits most Wi-Fi. On Ethernet or a direct cable, use 50 Mbps for the sharpest picture. This is a maximum: the PS5 lowers it by itself when packets drop.")
+                Text("1080p, 30 fps from the PS5, shown at 60 fps with Apple's frame interpolation. 30 Mbps (default) suits most Wi-Fi. On Ethernet or a direct cable, use 50–100 Mbps for the sharpest picture. This is a maximum: the PS5 lowers it by itself when packets drop.")
+                    .settingsHelp()
+            }
+
+            Section("Picture") {
+                LabeledContent("Sharpness") {
+                    HStack {
+                        Slider(value: $model.settings.sharpness, in: StreamSettingsLimits.sharpnessRange, step: 0.05)
+                        Text(model.settings.sharpness, format: .number.precision(.fractionLength(2)))
+                            .monospacedDigit()
+                            .frame(width: 64, alignment: .trailing)
+                    }
+                }
+                Text("Sharpens the 1080p stream on larger screens. 0 turns it off.")
                     .settingsHelp()
             }
 
@@ -70,10 +85,18 @@ struct SettingsView: View {
                     .settingsHelp()
             }
 
+            Section("Updates") {
+                Toggle("Check for updates when Framelift opens", isOn: $checkForUpdates)
+                Button("Check Now") { updates.checkNow() }
+                    .disabled(updates.status == .checking)
+                Text("Asks GitHub once for the latest Framelift release. Nothing about you or your PS5 is sent, and nothing is downloaded.")
+                    .settingsHelp()
+            }
+
             Section("Debug") {
                 Toggle("Show performance overlay (⇧⌘O)", isOn: $model.settings.showOverlay)
                 Toggle("Debug logs", isOn: $debugLogs)
-                Text("Writes a log folder per stream to ~/Library/Logs/Framelift/. Takes effect from the next stream.")
+                Text("Writes a log folder per stream to ~/Library/Logs/Framelift/, with a recording of the stream (up to 5 minutes) for offline tests. Takes effect from the next stream.")
                     .settingsHelp()
                 if debugLogs {
                     Text("Latency probe: ⇧⌘L while streaming, then press Options.")
@@ -96,7 +119,8 @@ struct SettingsView: View {
                     model.settings = StreamSettings()
                     touchpad = .clickOnly
                     buffering = .triple
-                    debugLogs = false
+                    debugLogs = DebugLogs.enabledByDefault
+                    checkForUpdates = true
                 }
             }
         }
