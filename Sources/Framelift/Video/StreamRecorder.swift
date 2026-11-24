@@ -1,42 +1,50 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// While Debug logs is on, saves the decoder's Annex-B input to the session log folder (stream.h265 or
-// stream.h264, from the first parameter sets) for offline tests; capped at 5 min / 1.2 GB per session.
-// stream.times.csv lists each unit's arrival (ms from the first unit) and size.
 import Foundation
 
+enum VideoRecording {
+    static let defaultsKey = "framelift.recordVideo.v1"
+
+    static var root: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Movies/Framelift", isDirectory: true)
+    }
+
+    static func stored(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: defaultsKey)
+    }
+}
+
 final class StreamRecorder: @unchecked Sendable {
-    static let shared = StreamRecorder()
     private static let maxSeconds: Double = 300
     private static let maxBytes = 1200 << 20
 
+    private let directory: URL
     private let lock = NSLock()
     private var file: FileHandle?
     private var times: FileHandle?
     private var started: UInt64 = 0
     private var bytes = 0
     private var done = false
-    private var directory: URL?
+
+    init(directory: URL) {
+        self.directory = directory
+    }
 
     /// Call for every unit handed to the decoder (any thread).
     func append(_ unit: EncodedVideoUnit) {
-        lock.lock(); defer { lock.unlock() }
-        guard Diagnostics.shared.enabled, let dir = Diagnostics.shared.directory else { return }
-        if directory != dir { close(); directory = dir; done = false }
+        lock.lock()
+        defer { lock.unlock() }
         guard !done else { return }
         if file == nil {
             // Start at parameter sets so the file decodes from its first byte.
             guard Self.hasParameterSets(unit) else { return }
-            let url = dir.appendingPathComponent(unit.codec == .h264 ? "stream.h264" : "stream.h265")
-            let tURL = dir.appendingPathComponent("stream.times.csv")
-            FileManager.default.createFile(atPath: url.path, contents: nil)
-            FileManager.default.createFile(atPath: tURL.path, contents: nil)
-            file = try? FileHandle(forWritingTo: url)
-            times = try? FileHandle(forWritingTo: tURL)
-            guard file != nil, times != nil else {
-                stop("couldn't open the recording files")
-                return
-            }
+            let url = directory.appendingPathComponent(unit.codec == .h264 ? "stream.h264" : "stream.h265")
+            let tURL = directory.appendingPathComponent("stream.times.csv")
             do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try Data().write(to: url, options: .withoutOverwriting)
+                try Data().write(to: tURL, options: .withoutOverwriting)
+                file = try FileHandle(forWritingTo: url)
+                times = try FileHandle(forWritingTo: tURL)
                 try times?.write(contentsOf: Data("arrival_ms,bytes\n".utf8))
             } catch {
                 stop(error.localizedDescription)
@@ -58,6 +66,13 @@ final class StreamRecorder: @unchecked Sendable {
             bytes += unit.data.count
         } catch {
             stop(error.localizedDescription)
+        }
+    }
+
+    func finish() {
+        lock.withLock {
+            done = true
+            close()
         }
     }
 

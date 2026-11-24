@@ -82,6 +82,12 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func revealRecordings() {
+        let folder = VideoRecording.root
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(folder)
+    }
+
     /// Save panel, then a redacted zip built off the main thread; revealed in Finder when done.
     func exportLogs() {
         let exporter = LogExporter(

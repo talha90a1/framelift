@@ -7,8 +7,11 @@ struct SettingsView: View {
     @EnvironmentObject private var updates: Updater
     @AppStorage(TouchpadMode.defaultsKey) private var touchpad: TouchpadMode = .clickOnly
     @AppStorage(DebugLogs.defaultsKey) private var debugLogs = DebugLogs.enabledByDefault
+    @AppStorage(VideoRecording.defaultsKey) private var recordVideo = false
     @AppStorage(DisplayBuffering.defaultsKey) private var buffering: DisplayBuffering = .triple
     @State private var hasSessionLogs = false
+    @State private var confirmDeleteLogs = false
+    @State private var deleteError: String?
 
     var body: some View {
         Form {
@@ -91,18 +94,23 @@ struct SettingsView: View {
             Section("Debug") {
                 Toggle("Show performance overlay (⇧⌘O)", isOn: $model.settings.showOverlay)
                 Toggle("Debug logs", isOn: $debugLogs)
-                Text("Saves logs and up to five minutes of video on this Mac. Applies when you reconnect.")
-                    .settingsHelp()
                 if debugLogs {
                     Text("Latency probe: ⇧⌘L while streaming, then press Options.")
                         .settingsHelp()
-                    HStack {
-                        Button("Export Logs…") { model.exportLogs() }
-                        Button("Show Logs in Finder") { model.revealLogs() }
-                    }
-                    Text(hasSessionLogs ? "Exports redacted logs. Video stays on this Mac." : "Start a stream to collect logs.")
-                        .settingsHelp()
                 }
+                HStack {
+                    Button("Export Logs…") { model.exportLogs() }
+                    Button("Show Logs in Finder") { model.revealLogs() }
+                    Button("Delete Logs…") { confirmDeleteLogs = true }
+                        .disabled(!hasSessionLogs || model.coordinator.isActive)
+                }
+            }
+
+            Section("Recording") {
+                Toggle("Record stream video", isOn: $recordVideo)
+                Text("Applies on the next stream. Video only, up to 5 minutes per stream.")
+                    .settingsHelp()
+                Button("Show Recordings in Finder") { model.revealRecordings() }
             }
 
             Section {
@@ -111,6 +119,7 @@ struct SettingsView: View {
                     touchpad = .clickOnly
                     buffering = .triple
                     debugLogs = DebugLogs.enabledByDefault
+                    recordVideo = false
                     updates.automaticallyChecks = true
                 }
             }
@@ -120,8 +129,31 @@ struct SettingsView: View {
         .frame(minHeight: 420)
         .onAppear {
             model.refreshDisplays()
-            hasSessionLogs = !LogFolders.sessionFolders().isEmpty
+            refreshLogAvailability()
         }
+        .onChange(of: model.coordinator.phase) { refreshLogAvailability() }
+        .confirmationDialog("Delete Framelift logs?", isPresented: $confirmDeleteLogs, titleVisibility: .visible) {
+            Button("Delete Logs", role: .destructive) {
+                guard !model.coordinator.isActive else { return }
+                do {
+                    try LogFolders.deleteLogs()
+                } catch {
+                    deleteError = error.localizedDescription
+                }
+                refreshLogAvailability()
+            }
+        } message: {
+            Text("Your video recordings will be kept.")
+        }
+        .alert("Couldn't delete logs", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
+            Button("OK") { deleteError = nil }
+        } message: {
+            Text(deleteError ?? "")
+        }
+    }
+
+    private func refreshLogAvailability() {
+        hasSessionLogs = !LogFolders.sessionsWithLogs().isEmpty
     }
 
     private var missingDisplayID: UInt32? {

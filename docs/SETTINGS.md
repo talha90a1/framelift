@@ -17,6 +17,8 @@ Open **Framelift › Settings…** (⌘,).
 2. Start a stream and reproduce the problem.
 3. Select **Export Logs…**, review the zip, and attach it to a [bug report](https://github.com/talha90a1/framelift/issues/new?template=bug_report.yml).
 
-Debug logs can save up to five minutes of video under `~/Library/Logs/Framelift/`. The export includes redacted event logs, frame timings, and a system report. Video stays on your Mac.
+The export includes redacted event logs, frame timings, and a system report. **Delete Logs…** clears saved diagnostics and keeps video recordings.
+
+**Settings › Recording › Record stream video** saves up to five minutes of video to `~/Movies/Framelift/` on the next stream. It works with Debug logs off. Log exports exclude video.
 
 For security issues, use [private vulnerability reporting](../SECURITY.md).
