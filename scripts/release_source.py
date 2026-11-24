@@ -74,6 +74,7 @@ def main(version):
             path = Path("chiaki-ng/third-party") / submodule
             revisions.append(f"{submodule}  {export(vendor / path, sources / path)}")
         revisions.append(f"Veyra  {export(vendor / 'veyra', sources / 'veyra', METADATA_PATCH)}")
+        revisions.append(f"Sparkle  {export(ROOT / '.build/checkouts/Sparkle', sources / 'Sparkle')}")
         brew_sources = sources / "homebrew"
         brew_sources.mkdir()
         for formula in FORMULAE:

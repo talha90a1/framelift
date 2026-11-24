@@ -61,7 +61,7 @@ Pull requests to `main` build and run Swift tests on an Apple Silicon runner. Sw
 
 To release, set the app version in `Resources/Info.plist`, date the matching section in `CHANGELOG.md`, and tag a commit on `main` as `vMAJOR.MINOR.PATCH`. GitHub Actions builds and tests the app, publishes its ZIP and corresponding source, and attests both downloads. Manual runs keep the build as an Actions artifact.
 
-The source archive includes the pinned chiaki-ng sources and the upstream archives and formulae for the Homebrew libraries shipped in that release. `SOURCE_REVISIONS.txt` lists the versions. The normal build uses Homebrew binaries. To reproduce the dependency versions, use the included recipes and source archives.
+The source archive includes the pinned chiaki-ng and Sparkle sources and the upstream archives and formulae for the Homebrew libraries shipped in that release. `SOURCE_REVISIONS.txt` lists the versions. The normal build uses Homebrew binaries. To reproduce the dependency versions, use the included recipes and source archives.
 
 For GitHub maintainers, protect `main` with pull requests and the `build-and-test` check. Restrict force pushes and deletion. Enable private vulnerability reporting, Dependabot alerts and security updates, secret scanning and push protection, and immutable releases.
 
