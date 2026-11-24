@@ -12,7 +12,9 @@ CONFIG=release
 
 [[ -d build/chiaki-dist/lib ]] || { echo "build/chiaki-dist missing: run scripts/build_chiaki.sh first" >&2; exit 1; }
 
-swift build -c "$CONFIG" --product Framelift
+SWIFT_FLAGS=()
+[[ "$CONFIG" == release ]] && SWIFT_FLAGS+=(-Xswiftc -gnone)
+swift build -c "$CONFIG" --product Framelift "${SWIFT_FLAGS[@]}"
 BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
 [[ -x "$BIN_DIR/Framelift" ]] || { echo "built executable not found in $BIN_DIR" >&2; exit 1; }
 
@@ -21,13 +23,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN_DIR/Framelift" "$APP/Contents/MacOS/Framelift"
-if [[ "${FRAMELIFT_STRIP:-0}" == 1 ]]; then
-  BINARY="$APP/Contents/MacOS/Framelift"
-  if codesign -d "$BINARY" >/dev/null 2>&1; then
-    codesign --remove-signature "$BINARY"
-  fi
-  strip -S -x "$BINARY"
-fi
+xcrun dyld_info -validate_only "$APP/Contents/MacOS/Framelift"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 [[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"
