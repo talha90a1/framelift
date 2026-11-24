@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Pairing ("registration") with a PS5: host, PSN account id, 8-digit PIN.
 import AppKit
 import SwiftUI
 
@@ -33,7 +32,7 @@ struct PairSheet: View {
                         if accountID.isEmpty {
                             Text("Not signed in").foregroundStyle(.secondary)
                         } else {
-                            Label(onlineID.isEmpty ? "Account id ready" : "Signed in as \(onlineID)", systemImage: "checkmark.circle.fill")
+                            Label(onlineID.isEmpty ? "Account ID entered" : "Signed in as \(onlineID)", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
                                 .lineLimit(1)
                         }
@@ -41,7 +40,6 @@ struct PairSheet: View {
                             Button(accountID.isEmpty ? "Sign in with PlayStation" : "Sign In Again") { showSignIn = true }
                             if !accountID.isEmpty {
                                 Button("Sign Out") { signOut() }
-                                    .help("Forget the saved PlayStation account id and online ID")
                             }
                             Button(manualAccount ? "Hide ID" : "Enter ID…") { manualAccount.toggle() }
                                 .help("Paste an account id manually (for example from chiaki-ng's psn-account-id script)")
@@ -51,7 +49,7 @@ struct PairSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if manualAccount {
-                    TextField("PSN account id", text: $accountID, prompt: Text("Base64 (ends in =) or decimal"))
+                    TextField("PSN account ID", text: $accountID, prompt: Text("Base64 (ends in =) or decimal"))
                 }
                 TextField("PIN", text: $pin, prompt: Text("8 digits"))
                     .onChange(of: pin) { _, value in
@@ -62,9 +60,9 @@ struct PairSheet: View {
             .disabled(isPairing)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("**PIN:** on the PS5 open Settings › System › Remote Play › Pair Device. The 8-digit code is valid for about 5 minutes.")
-                Text("**Account:** sign in with the **same PlayStation account that is signed in on the PS5** when you open Pair Device. Framelift keeps only your account id and online ID, and remembers them.")
-                Link("Account-id checker", destination: Self.accountLookupURL)
+                Text("On the PS5, open **Settings › System › Remote Play › Pair Device** to get the PIN.")
+                Text("Use the PlayStation account that opened **Pair Device** on the PS5.")
+                if manualAccount { Link("Look up account ID", destination: Self.accountLookupURL) }
             }
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -114,9 +112,9 @@ struct PairSheet: View {
     private func pair() async {
         error = nil
         guard let account = PSNAccount.decode(base64OrDecimal: accountID.trimmingCharacters(in: .whitespacesAndNewlines)),
-              account.count == 8
+            account.count == 8
         else {
-            error = "That account id isn't valid. It should decode to 8 bytes (Base64 like \"AbCdEfGhIjk=\" or a decimal number)."
+            error = "Enter an 8-byte account ID in Base64 or decimal."
             return
         }
         isPairing = true
@@ -130,14 +128,10 @@ struct PairSheet: View {
         } catch {
             let text = error.localizedDescription
             if text.contains("Invalid PSN ID") {
-                // The PS5 says this account id isn't its user's: forget it so the next try needs a fresh sign-in.
-                let who = onlineID
                 signOut()
-                self.error = "The PS5 says this PlayStation account isn't the one signed in on it" +
-                    (who.isEmpty ? "." : " (you signed in as \(who)).") +
-                    " Sign in with the account of the PS5 user who opened Pair Device, then pair again."
+                self.error = "Sign in with the PlayStation account that opened Pair Device."
             } else {
-                self.error = "Pairing failed: \(text) Make sure the PS5 user who opened Pair Device is \(onlineID.isEmpty ? "the account you signed in with" : onlineID), and the PIN is still on screen."
+                self.error = "Pairing failed. \(text)"
             }
         }
 

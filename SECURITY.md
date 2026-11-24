@@ -2,22 +2,11 @@
 
 ## Supported versions
 
-Framelift has no stable releases yet. Only the latest commit on `main` gets security fixes.
-
-| Version | Supported |
-| --- | --- |
-| Latest `main` | Yes |
-| Older commits | No |
+Security fixes target the [latest stable release](https://github.com/talha90a1/framelift/releases/latest).
 
 ## Reporting a vulnerability
 
-Please report vulnerabilities privately. Do not open a public issue, discussion or pull request for them.
-
-1. Open this repository's **Security** tab.
-2. Click **Report a vulnerability**. This uses GitHub's private vulnerability reporting, so only the maintainers can see the report.
-3. Describe the problem, the affected commit, how to reproduce it, and the impact you expect.
-
-Do not include real pairing keys, PINs, PSN account IDs or tokens in the report. If logs are needed, remove that data first.
+[Report a vulnerability privately](https://github.com/talha90a1/framelift/security/advisories/new). Include the affected version, steps to reproduce, and impact. Remove pairing keys, PINs, account IDs and tokens from attachments.
 
 ## Scope
 
@@ -31,7 +20,7 @@ In scope:
 
 Out of scope:
 
-- Bugs in chiaki-ng that also exist upstream without our patches. Please report those to [chiaki-ng](https://github.com/streetpea/chiaki-ng) as well. We still want to know about them.
+- Bugs in chiaki-ng that also exist upstream without our patches. Report these to [chiaki-ng](https://github.com/streetpea/chiaki-ng) as well.
 - Bugs in macOS, Apple frameworks, the PS5 firmware or PlayStation Network.
 - Attacks that need an attacker who already controls your Mac or your user account.
 - The lack of notarization or a Developer ID signature on builds you make yourself.
@@ -42,5 +31,3 @@ Out of scope:
 - We will confirm whether the issue is valid, keep you informed while we work on a fix, and tell you when it is fixed.
 - We will credit you in the fix's release notes unless you ask us not to.
 - Please give us a reasonable time to fix the issue before you disclose it publicly. We aim to fix confirmed issues within 90 days.
-
-This is a volunteer project, so these times are goals, not guarantees.
