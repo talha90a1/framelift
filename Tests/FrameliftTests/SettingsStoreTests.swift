@@ -30,8 +30,8 @@ struct SettingsStoreTests {
         settings.fullscreen = false
         settings.showOverlay = true
         settings.keepLLFIWarm = false
-        settings.keepStaticOverlays = false
-        settings.blendFallback = false
+        settings.keepStaticOverlays = true
+        settings.blendFallback = true
         store.save(settings)
         #expect(store.load() == settings)
     }
@@ -104,8 +104,20 @@ struct SettingsStoreTests {
         #expect(StreamPreset(settings: loaded) == .p720fps60)
         #expect(loaded.bitrateKbps == 9000 && loaded.codec == .h264 && !loaded.fullscreen)
         #expect(loaded.showOverlay == false)
-        #expect(loaded.keepLLFIWarm && loaded.keepStaticOverlays && loaded.blendFallback)
+        #expect(loaded.keepLLFIWarm && !loaded.keepStaticOverlays && !loaded.blendFallback)
         #expect(loaded.sharpness == StreamSettingsLimits.defaultSharpness)
+    }
+
+    @Test func resetsOldMotionDefaultsOnce() throws {
+        let (store, defaults, suite) = makeStore()
+        defer { removeTestDefaults(suite) }
+        defaults.set(Data(#"{"bitrateKbps":50000,"keepStaticOverlays":true,"blendFallback":true}"#.utf8), forKey: SettingsStore.key)
+        var migrated = store.load()
+        #expect(migrated.bitrateKbps == 50_000 && !migrated.keepStaticOverlays && !migrated.blendFallback)
+        migrated.keepStaticOverlays = true
+        migrated.blendFallback = true
+        store.save(migrated)
+        #expect(store.load() == migrated)
     }
 
     @Test func pairedConsoleWithPartialSettingsDecodes() throws {
@@ -118,7 +130,7 @@ struct SettingsStoreTests {
     @Test func debugLogsUseDefaultAndHonorSavedChoice() {
         let (_, defaults, suite) = makeStore()
         defer { removeTestDefaults(suite) }
-        #expect(DebugLogs.stored(defaults))
+        #expect(DebugLogs.stored(defaults) == DebugLogs.enabledByDefault)
         defaults.set(false, forKey: DebugLogs.defaultsKey)
         #expect(DebugLogs.stored(defaults) == false)
         defaults.set(true, forKey: DebugLogs.defaultsKey)
@@ -134,7 +146,7 @@ struct DefaultSettingsTests {
         #expect(s.bitrateKbps == 30000)
         #expect(s.codec == .hevc)
         #expect(s.showOverlay == false)
-        #expect(s.keepLLFIWarm && s.keepStaticOverlays && s.blendFallback)
+        #expect(s.keepLLFIWarm && !s.keepStaticOverlays && !s.blendFallback)
         let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
         defer { removeTestDefaults(suite) }

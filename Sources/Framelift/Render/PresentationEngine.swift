@@ -160,7 +160,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             llfi = l
         }
         interpSamples = 0
-        Diagnostics.shared.event("render: backend \(llfi == nil ? "none (Apple ML unavailable)" : "Apple ML interpolation"), fallback blend")
+        Diagnostics.shared.event("render: backend \(llfi?.backendName ?? "none (Apple ML unavailable)")")
         pacer.reset()
     }
 
