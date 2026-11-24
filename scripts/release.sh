@@ -8,10 +8,9 @@ export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
 NAME="Framelift-${VERSION}-macOS-arm64"
 
-# Strip debug symbols before signing because they can contain the builder's home directory.
 IDENTITY=$(security find-identity -p codesigning | awk '/"Framelift Release"/ { print $2; exit }')
 [[ -n "$IDENTITY" ]] || { echo "error: no \"Framelift Release\" signing identity in the keychain" >&2; exit 1; }
-FRAMELIFT_STRIP=1 FRAMELIFT_SIGN_IDENTITY="$IDENTITY" scripts/bundle_app.sh
+FRAMELIFT_SIGN_IDENTITY="$IDENTITY" scripts/bundle_app.sh
 
 APP=dist/Framelift.app
 # Releases are built by GitHub Actions; a local build embeds the builder's home folder in compiler-made
