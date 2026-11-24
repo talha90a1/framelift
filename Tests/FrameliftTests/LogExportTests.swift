@@ -85,8 +85,9 @@ struct RedactionTests {
     }
 
     @Test func genericConsoleNameIsKept() {
-        let generic = RedactionContext(homePath: "/Users/jdoe", userName: "jdoe",
-                                       consoles: [.init(nickname: "PS5", host: "10.0.0.2", id: "001122334455")])
+        let generic = RedactionContext(
+            homePath: "/Users/jdoe", userName: "jdoe",
+            consoles: [.init(nickname: "PS5", host: "10.0.0.2", id: "001122334455")])
         let r = LogRedactor(context: generic)
         #expect(r.redactLine("The PS5 refused the connection") == "The PS5 refused the connection")
     }
@@ -98,38 +99,38 @@ struct RedactionTests {
 
 struct SessionSummaryTests {
     private let frames = """
-    seq,arrival_ms,decode_ms,interp_wait_ms,interp_ms,arrival_to_mid_present_ms,arrival_to_real_present_ms,backend,discontinuity
-    0,1000.00,10.0,,,,30.00,0,0
-    1,1033.33,5.0,1.0,6.00,40.00,50.00,6,0
-    2,1066.67,5.0,1.0,8.00,42.00,52.00,6,0
-    3,1100.00,5.0,1.0,0,,54.00,3,0
-    garbage line
-    4,1133.33,5.0,1.0,10.00,44.00,,4,1
-    """
+        seq,arrival_ms,decode_ms,interp_wait_ms,interp_ms,arrival_to_mid_present_ms,arrival_to_real_present_ms,backend,discontinuity
+        0,1000.00,10.0,,,,30.00,0,0
+        1,1033.33,5.0,1.0,6.00,40.00,50.00,6,0
+        2,1066.67,5.0,1.0,8.00,42.00,52.00,6,0
+        3,1100.00,5.0,1.0,0,,54.00,3,0
+        garbage line
+        4,1133.33,5.0,1.0,10.00,44.00,,4,1
+        """
 
     private let events = """
-    ==== Framelift system report ====
-    Thermal state: nominal
-    ==== end of system report ====
+        ==== Framelift system report ====
+        Thermal state: nominal
+        ==== end of system report ====
 
-           0.0 session start ps5 os=Version 27.0 (Build 27A1)
-         500.0 stats src=30.0 disp=60.0 lost=99 kbps=1 be=x gpu present=1/2 therm=nominal
-        1000.0 core st=2 rx=30fps 23.5Mbps pkt=10/0 lost fec=0 ok/0 fail lost=7
-        1500.0 session stats connected=1 kbps=20000 target_kbps=-1 received=100 lost=3 idr=0
-        2000.0 render: missed deadline seq 12: blend shown
-        2100.0 render: missed deadline seq 14: nothing generated, real frame shown early
-        2200.0 render: pacer phase later (missed deadlines; budget 8.0 ms)
-        2500.0 core st=2 rx=30fps 41.0Mbps pkt=10/0 lost
-        3000.0 session stats connected=1 kbps=20000 target_kbps=-1 received=200 lost=5 idr=0
-        3500.0 session stats connected=1 kbps=20000 target_kbps=-1 received=10 lost=2 idr=0
-        4000.0 stats src=30.0 therm=fair
-        4100.0 input lag: press->frame 50.0 ms + arrival->glass 30.0 = 80.0 ms | median 50.0 + 30.0 = 80.0 ms (n=1)
-        4200.0 input lag: press->frame 70.0 ms + arrival->glass 30.0 = 100.0 ms | median 60.0 + 30.0 = 90.0 ms (n=2)
-        4300.0 input lag: press->frame 40.0 ms + arrival->glass 30.0 = 70.0 ms | median 50.0 + 30.0 = 80.0 ms (n=3)
-        5000.0 lag: arrival->handoff real mean 10.0 p95 12.0 ms | arrival->glass real mean 20.0 p95 25.0, generated p50 30.0 ms
-       60500.0 lag: arrival->handoff real mean 11.0 p95 13.0 ms | arrival->glass real mean 21.0 p95 26.0, generated p50 31.0 ms
-    not a timestamped line lost=1000
-    """
+               0.0 session start ps5 os=Version 27.0 (Build 27A1)
+             500.0 stats src=30.0 disp=60.0 lost=99 kbps=1 be=x gpu present=1/2 therm=nominal
+            1000.0 core st=2 rx=30fps 23.5Mbps pkt=10/0 lost fec=0 ok/0 fail lost=7
+            1500.0 session stats connected=1 kbps=20000 target_kbps=-1 received=100 lost=3 idr=0
+            2000.0 render: missed deadline seq 12: blend shown
+            2100.0 render: missed deadline seq 14: nothing generated, real frame shown early
+            2200.0 render: pacer phase later (missed deadlines; budget 8.0 ms)
+            2500.0 core st=2 rx=30fps 41.0Mbps pkt=10/0 lost
+            3000.0 session stats connected=1 kbps=20000 target_kbps=-1 received=200 lost=5 idr=0
+            3500.0 session stats connected=1 kbps=20000 target_kbps=-1 received=10 lost=2 idr=0
+            4000.0 stats src=30.0 therm=fair
+            4100.0 input lag: press->frame 50.0 ms + arrival->glass 30.0 = 80.0 ms | median 50.0 + 30.0 = 80.0 ms (n=1)
+            4200.0 input lag: press->frame 70.0 ms + arrival->glass 30.0 = 100.0 ms | median 60.0 + 30.0 = 90.0 ms (n=2)
+            4300.0 input lag: press->frame 40.0 ms + arrival->glass 30.0 = 70.0 ms | median 50.0 + 30.0 = 80.0 ms (n=3)
+            5000.0 lag: arrival->handoff real mean 10.0 p95 12.0 ms | arrival->glass real mean 20.0 p95 25.0, generated p50 30.0 ms
+           60500.0 lag: arrival->handoff real mean 11.0 p95 13.0 ms | arrival->glass real mean 21.0 p95 26.0, generated p50 31.0 ms
+        not a timestamped line lost=1000
+        """
 
     @Test func parsesFixture() {
         let s = SessionSummary.compute(framesCSV: frames, eventsLog: events)
@@ -140,7 +141,7 @@ struct SessionSummaryTests {
         #expect(s.arrivalToMid?.count == 3)
         #expect(s.arrivalToReal == .init(mean: 46.5, p95: 54, count: 4))
         #expect(s.missedDeadlines == 2 && s.missedDeadlineBlends == 1)
-        #expect(s.packetsLost == 7) // 5 before the reconnect + 2 after
+        #expect(s.packetsLost == 7)  // 5 before the reconnect + 2 after
         #expect(s.bitrateMbps == 23.5...41.0)
         #expect(s.thermalStates == ["nominal", "fair"])
         #expect(s.inputLagMedianMs == 80 && s.inputLagSamples == 3)
@@ -205,8 +206,9 @@ struct LogFoldersTests {
 
 struct LogExporterTests {
     private func makeExporter(root: URL) -> LogExporter {
-        LogExporter(logsRoot: root, systemReport: "Mac at /Users/jdoe\nNetwork: Wi-Fi (en0)\n", context: context,
-                    date: Date(timeIntervalSince1970: 1_800_000_000))
+        LogExporter(
+            logsRoot: root, systemReport: "Mac at /Users/jdoe\nNetwork: Wi-Fi (en0)\n", context: context,
+            date: Date(timeIntervalSince1970: 1_800_000_000))
     }
 
     @Test func stagesRedactedSessions() throws {
