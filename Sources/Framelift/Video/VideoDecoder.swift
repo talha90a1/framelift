@@ -11,6 +11,7 @@ final class VideoDecoder {
 
     private let sink: FrameSink
     private let onNeedKeyframe: () -> Void
+    private let onFirstFrame: () -> Void
 
     // MARK: Decode-side state (decodeLock)
     private let decodeLock = NSLock()
@@ -42,9 +43,10 @@ final class VideoDecoder {
     private var decodeMs = Ring(capacity: 1024)
     private var arrivals = Ring(capacity: 64)
 
-    init(sink: FrameSink, onNeedKeyframe: @escaping () -> Void) {
+    init(sink: FrameSink, onNeedKeyframe: @escaping () -> Void, onFirstFrame: @escaping () -> Void) {
         self.sink = sink
         self.onNeedKeyframe = onNeedKeyframe
+        self.onFirstFrame = onFirstFrame
     }
 
     deinit {
@@ -376,6 +378,7 @@ final class VideoDecoder {
             DecodedFrame(
                 pixelBuffer: pixelBuffer, sequence: seq, arrivalHostTime: ticket.arrival,
                 decodedHostTime: now, discontinuity: discontinuity, colourTags: tags))
+        if seq == 0 { onFirstFrame() }
     }
 
     // MARK: Helpers

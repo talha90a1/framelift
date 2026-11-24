@@ -248,8 +248,13 @@ private struct StatusBar: View {
                 Label(presetText, systemImage: "film")
             }
             Spacer()
-            if coordinator.isActive {
+            switch coordinator.phase {
+            case .connecting:
+                Button("Cancel") { coordinator.stop() }
+            case .streaming:
                 Button("Leave Stream") { coordinator.stop() }
+            case .idle, .stopping:
+                EmptyView()
             }
         }
         .font(.callout)
