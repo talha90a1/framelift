@@ -5,6 +5,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var updates: UpdateChecker
+    @AppStorage(UpdateChecks.defaultsKey) private var checkForUpdates = true
     @AppStorage(TouchpadMode.defaultsKey) private var touchpad: TouchpadMode = .clickOnly
     @AppStorage(DebugLogs.defaultsKey) private var debugLogs = true
     @AppStorage(DisplayBuffering.defaultsKey) private var buffering: DisplayBuffering = .triple
@@ -83,6 +85,14 @@ struct SettingsView: View {
                     .settingsHelp()
             }
 
+            Section("Updates") {
+                Toggle("Check for updates when Framelift opens", isOn: $checkForUpdates)
+                Button("Check Now") { updates.checkNow() }
+                    .disabled(updates.status == .checking)
+                Text("Asks GitHub once for the latest Framelift release. Nothing about you or your PS5 is sent, and nothing is downloaded.")
+                    .settingsHelp()
+            }
+
             Section("Debug") {
                 Toggle("Show performance overlay (⇧⌘O)", isOn: $model.settings.showOverlay)
                 Toggle("Debug logs", isOn: $debugLogs)
@@ -110,6 +120,7 @@ struct SettingsView: View {
                     touchpad = .clickOnly
                     buffering = .triple
                     debugLogs = false
+                    checkForUpdates = true
                 }
             }
         }

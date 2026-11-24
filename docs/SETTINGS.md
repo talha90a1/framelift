@@ -13,6 +13,7 @@ Open Settings with ⌘,. The defaults are the recommended values.
   - Blend a stand-in frame when Apple ML is late (on): the 50/50 blend fallback.
   - Display buffers: 3 (default, lower lag) or 2 (fewer dropped frames on slow Macs).
 - **Controller:** Touchpad. Click only (default) sends just the touchpad press. Touch + click also sends touches and swipes, for games that need them.
+- **Updates:** Check for updates when Framelift opens (on). Framelift asks GitHub once for the latest release; nothing about you or your PS5 is sent and nothing is downloaded. When a newer version is out, a bar in the main window links to its release page. Check Now, or Framelift › Check for Updates…, checks by hand.
 - **Debug:**
   - Show performance overlay (⇧⌘O): live timings in the stream window.
   - Debug logs (off by default): writes a log folder per stream (`events.log` and per-frame timings in `frames.csv`) to `~/Library/Logs/Framelift/`. It takes effect from the next stream.
