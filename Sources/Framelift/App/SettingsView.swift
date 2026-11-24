@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Settings window (Cmd+,): display, fullscreen, bitrate, frame generation, touchpad, overlay, debug logs.
 import AppKit
 import SwiftUI
 
@@ -16,20 +15,23 @@ struct SettingsView: View {
         Form {
             Section("Display") {
                 Picker("Play on", selection: $model.settings.targetDisplayID) {
-                    Text("Same display as the Framelift window").tag(UInt32?.none)
+                    Text("Framelift window’s display").tag(UInt32?.none)
                     ForEach(model.displays) { display in
                         Text(display.label + (display.isBuiltIn ? " (built-in)" : "")).tag(UInt32?.some(display.id))
                     }
                     if let missing = missingDisplayID {
-                        Text("Disconnected display (\(missing))").tag(UInt32?.some(missing))
+                        Text("Disconnected display").tag(UInt32?.some(missing))
                     }
                 }
                 Toggle("Fullscreen", isOn: $model.settings.fullscreen)
-                Text("Pick your TV to stream there over HDMI. Fullscreen also lets macOS turn on Game Mode.")
-                    .settingsHelp()
             }
 
             Section("Stream") {
+                Picker("Resolution and frame rate", selection: presetBinding) {
+                    ForEach(Self.presets) { preset in
+                        Text(preset.title).tag(preset)
+                    }
+                }
                 LabeledContent("Bitrate") {
                     HStack {
                         Slider(value: bitrateBinding, in: bitrateRange, step: 1000)
@@ -38,11 +40,16 @@ struct SettingsView: View {
                             .frame(width: 64, alignment: .trailing)
                     }
                 }
-                Text("1080p, 30 fps from the PS5, shown at 60 fps with Apple's frame interpolation. 30 Mbps (default) suits most Wi-Fi. On Ethernet or a direct cable, use 50–100 Mbps for the sharpest picture. This is a maximum: the PS5 lowers it by itself when packets drop.")
+                Toggle("HDR", isOn: hdrBinding)
+                Text("HDR requires an HDR display and turns off frame generation. Stream changes apply when you reconnect.")
                     .settingsHelp()
             }
 
             Section("Picture") {
+                Picker("Upscaler", selection: $model.settings.upscaler) {
+                    Text("Framelift").tag(Upscaler.sharp)
+                    Text("Apple MetalFX").tag(Upscaler.metalFX)
+                }
                 LabeledContent("Sharpness") {
                     HStack {
                         Slider(value: $model.settings.sharpness, in: StreamSettingsLimits.sharpnessRange, step: 0.05)
@@ -51,23 +58,14 @@ struct SettingsView: View {
                             .frame(width: 64, alignment: .trailing)
                     }
                 }
-                Text("Sharpens the 1080p stream on larger screens. 0 turns it off.")
-                    .settingsHelp()
+                .disabled(model.settings.upscaler == .metalFX)
             }
 
-            Section("Frame generation") {
-                LabeledContent("Engine") {
-                    Text("Apple ML interpolation · 30 → 60 fps").foregroundStyle(.secondary)
-                }
-                Toggle("Keep Apple ML warm (recommended)", isOn: $model.settings.keepLLFIWarm)
-                Text("Runs a spare request between frames so the model stays fast; about 4–5 ms less lag per generated frame. Takes effect from the next stream.")
-                    .settingsHelp()
-                Toggle("Keep subtitles and HUD sharp (recommended)", isOn: $model.settings.keepStaticOverlays)
-                Text("Copies text and UI that don't move from the real frames, so the model can't smear them.")
-                    .settingsHelp()
-                Toggle("Blend a stand-in frame when Apple ML is late (recommended)", isOn: $model.settings.blendFallback)
-                Text("Shows a 50/50 mix of the two real frames instead of repeating one when a generated frame misses its slot.")
-                    .settingsHelp()
+            Section("Frame Generation") {
+                Toggle("Keep interpolation model warm", isOn: $model.settings.keepLLFIWarm)
+                Text("Applies when you reconnect.").settingsHelp()
+                Toggle("Keep subtitles and HUD sharp", isOn: $model.settings.keepStaticOverlays)
+                Toggle("Blend when a generated frame is late", isOn: $model.settings.blendFallback)
                 Picker("Display buffers", selection: $buffering) {
                     ForEach(DisplayBuffering.allCases.reversed()) { mode in
                         Text(mode.title).tag(mode)
@@ -81,22 +79,18 @@ struct SettingsView: View {
                         Text(mode.title).tag(mode)
                     }
                 }
-                Text("Click only sends just the touchpad press. Some games open the map on a Remote Play touch. Use Touch + click for games that need swipes.")
-                    .settingsHelp()
             }
 
             Section("Updates") {
-                Toggle("Check for updates when Framelift opens", isOn: $checkForUpdates)
+                Toggle("Check for updates at launch", isOn: $checkForUpdates)
                 Button("Check Now") { updates.checkNow() }
                     .disabled(updates.status == .checking)
-                Text("Asks GitHub once for the latest Framelift release. Nothing about you or your PS5 is sent, and nothing is downloaded.")
-                    .settingsHelp()
             }
 
             Section("Debug") {
                 Toggle("Show performance overlay (⇧⌘O)", isOn: $model.settings.showOverlay)
                 Toggle("Debug logs", isOn: $debugLogs)
-                Text("Writes a log folder per stream to ~/Library/Logs/Framelift/, with a recording of the stream (up to 5 minutes) for offline tests. Takes effect from the next stream.")
+                Text("Saves logs and up to five minutes of video on this Mac. Applies when you reconnect.")
                     .settingsHelp()
                 if debugLogs {
                     Text("Latency probe: ⇧⌘L while streaming, then press Options.")
@@ -105,12 +99,8 @@ struct SettingsView: View {
                         Button("Export Logs…") { model.exportLogs() }
                         Button("Show Logs in Finder") { model.revealLogs() }
                     }
-                    Text("Logs stay on this Mac. Export makes a zip with IP addresses, PSN IDs, console names and your user name removed; attach it to a bug report.")
+                    Text(hasSessionLogs ? "Exports redacted logs. Video stays on this Mac." : "Start a stream to collect logs.")
                         .settingsHelp()
-                    if !hasSessionLogs {
-                        Text("No stream logs yet: play a stream with Debug logs on and reproduce the problem first, then export.")
-                            .settingsHelp()
-                    }
                 }
             }
 
@@ -141,6 +131,24 @@ struct SettingsView: View {
     private var bitrateRange: ClosedRange<Double> {
         let limits = StreamSettingsLimits.bitrateRangeKbps
         return Double(limits.lowerBound)...Double(limits.upperBound)
+    }
+
+    private static let presets: [StreamPreset] = [.p1080fps30, .p1080fps60, .p720fps30, .p720fps60]
+
+    private var presetBinding: Binding<StreamPreset> {
+        Binding {
+            StreamPreset(settings: model.settings) ?? .p1080fps30
+        } set: { preset in
+            preset.apply(to: &model.settings)
+        }
+    }
+
+    private var hdrBinding: Binding<Bool> {
+        Binding {
+            model.settings.codec == .hevcHDR
+        } set: { on in
+            model.settings.codec = on ? .hevcHDR : .hevc
+        }
     }
 
     private var bitrateBinding: Binding<Double> {

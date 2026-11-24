@@ -36,6 +36,7 @@ final class VideoDecoder {
     private var lastKeyframeRequest: UInt64 = 0
     /// Read the next delivered frame's colour tags (set per format change).
     private var colourPending = true
+    private var colourTags = ColourTags.untagged
     /// Frames delivered; every 15th publishes decode time and source rate.
     private var decodedCount: UInt64 = 0
     private var decodeMs = Ring(capacity: 1024)
@@ -113,7 +114,7 @@ final class VideoDecoder {
         recoveryRequested = false
         stateLock.unlock()
         if handlerError {
-            if let session { VTDecompressionSessionWaitForAsynchronousFrames(session) }   // flush
+            if let session { VTDecompressionSessionWaitForAsynchronousFrames(session) }  // flush
             beginRecoveryLocked()
             // A unit that is itself an IDR already recovers; don't ask the console for another.
             if !hasIDR { wantKeyframe = requestKeyframeIfAllowed() }
@@ -123,7 +124,7 @@ final class VideoDecoder {
             parametersChanged = false
         }
 
-        guard hasVCL else { return wantKeyframe }   // config-only unit
+        guard hasVCL else { return wantKeyframe }  // config-only unit
 
         guard format != nil else { return requestKeyframeIfAllowed() || wantKeyframe }
         if waitingForIDR {
@@ -134,8 +135,10 @@ final class VideoDecoder {
             waitingForIDR = true
             return requestKeyframeIfAllowed() || wantKeyframe
         }
-        switch submitLocked(bytes: bytes, nals: payload, arrival: unit.arrivalHostTime,
-                            discontinuity: lossDiscontinuityPending) {
+        switch submitLocked(
+            bytes: bytes, nals: payload, arrival: unit.arrivalHostTime,
+            discontinuity: lossDiscontinuityPending)
+        {
         case .queued:
             lossDiscontinuityPending = false
             return wantKeyframe
@@ -177,7 +180,7 @@ final class VideoDecoder {
         let sets = order.compactMap { parameterSets[$0] }
         guard sets.count == order.count else { return false }
         guard let fmt = VideoAnnexB.makeFormatDescription(parameterSets: sets, hevc: hevc) else {
-            return true   // unusable set: keep the old format, wait for the next config
+            return true  // unusable set: keep the old format, wait for the next config
         }
         if let format, CMFormatDescriptionEqual(format, otherFormatDescription: fmt) { return true }
 
@@ -186,12 +189,13 @@ final class VideoDecoder {
         let tenBit = depth.map { $0 > 8 } ?? false
         // CoreMedia parses video_full_range_flag from the SPS VUI into this extension (absent = video range).
         let fullRange = (CMFormatDescriptionGetExtension(fmt, extensionKey: kCMFormatDescriptionExtension_FullRangeVideo) as? Bool) ?? false
-        let newPixelFormat = switch (tenBit, fullRange) {
-        case (false, false): kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-        case (false, true): kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-        case (true, false): kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-        case (true, true): kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
-        }
+        let newPixelFormat =
+            switch (tenBit, fullRange) {
+            case (false, false): kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            case (false, true): kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            case (true, false): kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            case (true, true): kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+            }
         let hadFormat = format != nil
         let resized = hadFormat && (newDims.width != dimensions.width || newDims.height != dimensions.height)
 
@@ -209,7 +213,7 @@ final class VideoDecoder {
     private func createSessionLocked() -> Bool {
         guard let format else { return false }
         let decoderSpec: [CFString: Any] = [
-            kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder: true,
+            kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder: true
         ]
         let imageAttrs: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: pixelFormat,
@@ -239,18 +243,25 @@ final class VideoDecoder {
 
     private enum SubmitResult { case queued, failed, recoveryPending }
 
-    private func submitLocked(bytes: [UInt8], nals: [VideoAnnexB.NAL], arrival: UInt64,
-                              discontinuity: Bool) -> SubmitResult {
+    private func submitLocked(
+        bytes: [UInt8], nals: [VideoAnnexB.NAL], arrival: UInt64,
+        discontinuity: Bool
+    ) -> SubmitResult {
         guard let session, let format else { return .failed }
         let total = nals.reduce(0) { $0 + 4 + $1.range.count }
         var block: CMBlockBuffer?
-        guard CMBlockBufferCreateWithMemoryBlock(
-            allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: total, blockAllocator: kCFAllocatorDefault,
-            customBlockSource: nil, offsetToData: 0, dataLength: total, flags: kCMBlockBufferAssureMemoryNowFlag,
-            blockBufferOut: &block) == noErr, let block else { return .failed }
+        guard
+            CMBlockBufferCreateWithMemoryBlock(
+                allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: total, blockAllocator: kCFAllocatorDefault,
+                customBlockSource: nil, offsetToData: 0, dataLength: total, flags: kCMBlockBufferAssureMemoryNowFlag,
+                blockBufferOut: &block) == noErr, let block
+        else { return .failed }
         var dataPointer: UnsafeMutablePointer<Int8>?
-        guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: nil,
-                                          dataPointerOut: &dataPointer) == noErr, let dataPointer else { return .failed }
+        guard
+            CMBlockBufferGetDataPointer(
+                block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: nil,
+                dataPointerOut: &dataPointer) == noErr, let dataPointer
+        else { return .failed }
         bytes.withUnsafeBufferPointer { src in
             let dst = UnsafeMutableRawPointer(dataPointer)
             var off = 0
@@ -262,16 +273,20 @@ final class VideoDecoder {
             }
         }
 
-        var timing = CMSampleTimingInfo(duration: .invalid,
-                                        presentationTimeStamp: CMTime(value: frameIndex, timescale: 1000),
-                                        decodeTimeStamp: .invalid)
+        var timing = CMSampleTimingInfo(
+            duration: .invalid,
+            presentationTimeStamp: CMTime(value: frameIndex, timescale: 1000),
+            decodeTimeStamp: .invalid)
         frameIndex += 1
         var size = total
         var sample: CMSampleBuffer?
-        guard CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format,
-                                        sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
-                                        sampleSizeEntryCount: 1, sampleSizeArray: &size, sampleBufferOut: &sample) == noErr,
-              let sample else { return .failed }
+        guard
+            CMSampleBufferCreateReady(
+                allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format,
+                sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+                sampleSizeEntryCount: 1, sampleSizeArray: &size, sampleBufferOut: &sample) == noErr,
+            let sample
+        else { return .failed }
 
         let ticket = FrameTicket(arrival: arrival, submitted: HostClock.now(), discontinuity: discontinuity)
         // Read the epoch and the error flag in one critical section, so a frame predicted from a reference
@@ -337,8 +352,11 @@ final class VideoDecoder {
         let seq = sequence
         sequence += 1
         decodedCount += 1
-        let readColour = colourPending
-        colourPending = false
+        if colourPending {
+            colourTags = ColourTags.read(pixelBuffer)
+            colourPending = false
+        }
+        let tags = colourTags
         decodeMs.append(HostClock.milliseconds(from: ticket.submitted, to: now))
         arrivals.append(HostClock.seconds(ticket.arrival))
         var publish: (Double, Double)?
@@ -347,14 +365,17 @@ final class VideoDecoder {
         }
         stateLock.unlock()
 
-        if readColour { StreamColour.shared.publish(ColourTags.read(pixelBuffer)) }
         if let publish {
-            Telemetry.shared.update { $0.decodeMsP50 = publish.0; $0.sourceFPS = publish.1 }
+            Telemetry.shared.update {
+                $0.decodeMsP50 = publish.0; $0.sourceFPS = publish.1
+            }
         }
         Diagnostics.shared.mark(.arrival, sequence: seq, at: ticket.arrival)
         Diagnostics.shared.mark(.decoded, sequence: seq, at: now)
-        sink.submit(DecodedFrame(pixelBuffer: pixelBuffer, sequence: seq, arrivalHostTime: ticket.arrival,
-                                 decodedHostTime: now, discontinuity: discontinuity))
+        sink.submit(
+            DecodedFrame(
+                pixelBuffer: pixelBuffer, sequence: seq, arrivalHostTime: ticket.arrival,
+                decodedHostTime: now, discontinuity: discontinuity, colourTags: tags))
     }
 
     // MARK: Helpers
@@ -365,7 +386,7 @@ final class VideoDecoder {
         /// Transport loss before this unit: flag its output frame (not whichever frame is delivered next).
         let discontinuity: Bool
         var epoch: UInt64 = 0
-        var done = false   // guarded by stateLock
+        var done = false  // guarded by stateLock
         init(arrival: UInt64, submitted: UInt64, discontinuity: Bool) {
             self.arrival = arrival; self.submitted = submitted; self.discontinuity = discontinuity
         }

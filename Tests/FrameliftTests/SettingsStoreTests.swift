@@ -12,7 +12,7 @@ struct SettingsStoreTests {
     }
 
     @Test func defaultsWhenNothingSaved() {
-        let (store, defaults, suite) = makeStore()
+        let (store, _, suite) = makeStore()
         defer { removeTestDefaults(suite) }
         let settings = store.load()
         #expect(settings == StreamSettings())
@@ -20,7 +20,7 @@ struct SettingsStoreTests {
     }
 
     @Test func roundTrip() {
-        let (store, defaults, suite) = makeStore()
+        let (store, _, suite) = makeStore()
         defer { removeTestDefaults(suite) }
         var settings = StreamSettings()
         StreamPreset.p720fps60.apply(to: &settings)
@@ -74,11 +74,18 @@ struct SettingsStoreTests {
         #expect(SettingsStore.sanitized(settings).bitrateKbps == 100_000)
     }
 
-    @Test func hdrSettingsAreNotKept() {
+    @Test func hdrAndUpscalerAreKept() {
         var settings = StreamSettings()
         settings.codec = .hevcHDR
+        settings.upscaler = .metalFX
         let sanitized = SettingsStore.sanitized(settings)
-        #expect(sanitized.codec == .hevc)
+        #expect(sanitized.codec == .hevcHDR && sanitized.upscaler == .metalFX)
+    }
+
+    @Test func unknownUpscalerFallsBackToDefault() throws {
+        let data = Data(#"{"upscaler":"lanczos","sharpness":0.8}"#.utf8)
+        let decoded = try JSONDecoder().decode(StreamSettings.self, from: data)
+        #expect(decoded.upscaler == .sharp && decoded.sharpness == 0.8)
     }
 
     @Test func unpluggedDisplayResolvesToMainWindowScreen() {
@@ -102,7 +109,8 @@ struct SettingsStoreTests {
     }
 
     @Test func pairedConsoleWithPartialSettingsDecodes() throws {
-        let json = #"[{"id":"aa","nickname":"PS5","host":"192.168.1.2","lastSettings":{"width":1920,"height":1080,"streamFPS":30,"bitrateKbps":50000,"codec":1,"fullscreen":true,"sceneCutFallback":true,"showOverlay":false}}]"#
+        let json =
+            #"[{"id":"aa","nickname":"PS5","host":"192.168.1.2","lastSettings":{"width":1920,"height":1080,"streamFPS":30,"bitrateKbps":50000,"codec":1,"fullscreen":true,"sceneCutFallback":true,"showOverlay":false}}]"#
         let consoles = try JSONDecoder().decode([PairedConsole].self, from: Data(json.utf8))
         #expect(consoles.first?.lastSettings?.bitrateKbps == 50000)
     }

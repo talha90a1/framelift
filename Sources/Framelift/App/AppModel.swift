@@ -157,7 +157,11 @@ final class AppModel: ObservableObject {
         busyMessage = "Waking \(console.nickname)…"
         defer { busyMessage = nil }
         if !(await ConsoleDiscovery.wake(host: console.host, credentials: credentials)) {
-            errorAlert = .init(title: "Couldn't wake \(console.nickname)", message: "The PS5 didn't answer at \(console.host). Check that it's in rest mode with \"Stay connected to the internet\" and \"Enable turning on PS5 from network\" on.")
+            errorAlert = .init(
+                title: "Couldn't wake \(console.nickname)",
+                message:
+                    "The PS5 didn't answer at \(console.host). Check that it's in rest mode with \"Stay connected to the internet\" and \"Enable turning on PS5 from network\" on."
+            )
         }
     }
 
@@ -179,7 +183,13 @@ final class AppModel: ObservableObject {
         var remembered = console
         remembered.lastSettings = settings
         consoles.update(remembered)
-        coordinator.start(.console(remembered, credentials), settings: effectiveSettings)
+        var stream = effectiveSettings
+        // An HDR stream turns frame generation off, so it is asked for only when the screen can show it.
+        if stream.codec == .hevcHDR, !targetScreenShowsHDR(stream.targetDisplayID) {
+            stream.codec = .hevc
+            Diagnostics.shared.event("settings: HDR not asked for, the screen has no HDR headroom")
+        }
+        coordinator.start(.console(remembered, credentials), settings: stream)
     }
 
     /// Settings with a stale target display (TV unplugged) mapped to "this window's display".
@@ -187,6 +197,11 @@ final class AppModel: ObservableObject {
         var result = settings
         result.targetDisplayID = SettingsStore.resolvedDisplayID(settings.targetDisplayID, available: displays.map(\.id))
         return result
+    }
+
+    private func targetScreenShowsHDR(_ id: UInt32?) -> Bool {
+        let screen = id.flatMap(DisplayCatalog.screen(for:)) ?? NSScreen.main ?? NSScreen.screens.first
+        return (screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1
     }
 
     private func waitUntilAwake(_ console: PairedConsole) async -> Bool {
@@ -199,6 +214,7 @@ final class AppModel: ObservableObject {
     }
 
     private func reportMissingCredentials(_ console: PairedConsole) {
-        errorAlert = .init(title: "Pairing data missing", message: "The keys for \(console.nickname) are missing on this Mac. Remove the console and pair it again.")
+        errorAlert = .init(
+            title: "Pairing data missing", message: "The keys for \(console.nickname) are missing on this Mac. Remove the console and pair it again.")
     }
 }

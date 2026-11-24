@@ -26,7 +26,7 @@ final class StreamRecorder: @unchecked Sendable {
         if file == nil {
             // Start at parameter sets so the file decodes from its first byte.
             guard Self.hasParameterSets(unit) else { return }
-            let url = dir.appendingPathComponent(unit.codec == .hevc ? "stream.h265" : "stream.h264")
+            let url = dir.appendingPathComponent(unit.codec == .h264 ? "stream.h264" : "stream.h265")
             let tURL = dir.appendingPathComponent("stream.times.csv")
             FileManager.default.createFile(atPath: url.path, contents: nil)
             FileManager.default.createFile(atPath: tURL.path, contents: nil)
@@ -68,9 +68,11 @@ final class StreamRecorder: @unchecked Sendable {
         while i + 3 < b.count {
             if b[i] == 0, b[i + 1] == 0, b[i + 2] == 1 {
                 let h = b[i + 3]
-                if unit.codec == .hevc ? [32, 33].contains((h >> 1) & 0x3f) : (h & 0x1f) == 7 { return true }
+                if unit.codec == .h264 ? (h & 0x1f) == 7 : [32, 33].contains((h >> 1) & 0x3f) { return true }
                 i += 3
-            } else { i += 1 }
+            } else {
+                i += 1
+            }
         }
         return false
     }

@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Regenerates Render/ShaderSources.swift (inline fallback) from Render/Shaders/*.metal.
-set -e
+set -euo pipefail
 ROOT=${0:A:h}/..
 R=$ROOT/Sources/Framelift/Render
 OUT=$R/ShaderSources.swift
@@ -16,5 +16,5 @@ OUT=$R/ShaderSources.swift
   done
   echo "    ]"
   echo "}"
-} > $OUT.tmp
+} | xcrun swift-format format --configuration "$ROOT/.swift-format" - > $OUT.tmp
 if ! cmp -s $OUT.tmp $OUT; then mv $OUT.tmp $OUT; echo "updated $OUT"; else rm $OUT.tmp; fi
