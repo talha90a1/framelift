@@ -71,9 +71,9 @@ struct StreamSettings: Codable, Equatable, Sendable {
     /// Sampled at stream start.
     var keepLLFIWarm: Bool = true
     /// Copy pixels that don't move between the real frames (subtitles, HUD) into the generated frame.
-    var keepStaticOverlays: Bool = true
+    var keepStaticOverlays: Bool = false
     /// 50/50 blend shown when Apple's frame misses its deadline; off repeats the real frame instead.
-    var blendFallback: Bool = true
+    var blendFallback: Bool = false
     var sharpness: Double = StreamSettingsLimits.defaultSharpness
     var upscaler: Upscaler = .sharp
 

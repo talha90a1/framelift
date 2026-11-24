@@ -39,6 +39,7 @@ enum StreamSettingsLimits {
 /// Loads and saves `StreamSettings` as JSON in UserDefaults. Unknown or corrupt data falls back to defaults.
 struct SettingsStore {
     static let key = "framelift.streamSettings.v1"
+    private static let motionDefaultsKey = "framelift.motionDefaults.v1"
     let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -47,14 +48,20 @@ struct SettingsStore {
 
     func load() -> StreamSettings {
         guard let data = defaults.data(forKey: Self.key),
-            let decoded = try? JSONDecoder().decode(StreamSettings.self, from: data)
+            var decoded = try? JSONDecoder().decode(StreamSettings.self, from: data)
         else { return StreamSettings() }
+        if !defaults.bool(forKey: Self.motionDefaultsKey) {
+            decoded.keepStaticOverlays = false
+            decoded.blendFallback = false
+            save(decoded)
+        }
         return Self.sanitized(decoded)
     }
 
     func save(_ settings: StreamSettings) {
         guard let data = try? JSONEncoder().encode(Self.sanitized(settings)) else { return }
         defaults.set(data, forKey: Self.key)
+        defaults.set(true, forKey: Self.motionDefaultsKey)
     }
 
     /// Clamps stored values to what the app offers: a PS5 preset, a bitrate and a sharpness in range.
