@@ -110,11 +110,11 @@ struct SettingsStoreTests {
     @Test func debugLogsUseDefaultAndHonorSavedChoice() {
         let (_, defaults, suite) = makeStore()
         defer { removeTestDefaults(suite) }
-        #expect(DebugLogs.stored(defaults) == false)
-        defaults.set(true, forKey: DebugLogs.defaultsKey)
         #expect(DebugLogs.stored(defaults))
         defaults.set(false, forKey: DebugLogs.defaultsKey)
         #expect(DebugLogs.stored(defaults) == false)
+        defaults.set(true, forKey: DebugLogs.defaultsKey)
+        #expect(DebugLogs.stored(defaults))
     }
 }
 
