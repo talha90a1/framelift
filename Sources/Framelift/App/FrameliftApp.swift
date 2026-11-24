@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import AppKit
+import Darwin
 import SwiftUI
 
 final class FrameliftAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        signal(SIGPIPE, SIG_IGN)
         // Also needed when the bare SwiftPM binary is run outside an .app bundle.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()

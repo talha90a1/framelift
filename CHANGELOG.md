@@ -8,9 +8,14 @@
 - 10-bit HDR on compatible displays.
 - Apple MetalFX upscaling.
 - Press a button to select the controller when several are connected.
+- In-app DualSense pairing, disconnect, and unpair, with an animated button guide.
 
 ### Fixed
 
+- Framelift stays open if the connection breaks during a write.
+- Fixed a VideoToolbox crash when leaving a stream during frame generation.
+- Fixed a crash on Connect when the packaged app loaded its shaders.
+- Fullscreen opens once the first PS5 video frame arrives.
 - Native 60 fps streams stay at 60 fps on 120 Hz displays.
 - HDR recordings use the HEVC format.
 
