@@ -15,8 +15,9 @@ struct UpdateCheckTests {
         #expect(try ReleaseCheck.newer(than: "1.2.0", in: body(tag: "v1.1.9")) == nil)
         // Numbers, not text: 10 is newer than 9.
         #expect(try ReleaseCheck.newer(than: "1.9.0", in: body(tag: "v1.10.0"))?.version == "1.10.0")
-        #expect(try ReleaseCheck.newer(than: "1.0.0", in: body(tag: "1.0.1"))?.url.absoluteString
-            == "https://github.com/talha90a1/framelift/releases/tag/1.0.1")
+        #expect(
+            try ReleaseCheck.newer(than: "1.0.0", in: body(tag: "1.0.1"))?.url.absoluteString
+                == "https://github.com/talha90a1/framelift/releases/tag/1.0.1")
     }
 
     @Test func rejectsWhatIsNotAStableReleaseOfThisRepository() {

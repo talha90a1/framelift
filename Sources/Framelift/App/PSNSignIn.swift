@@ -36,7 +36,7 @@ enum PSNSignIn {
         case noCode, http(Int), badResponse
         var errorDescription: String? {
             switch self {
-            case .noCode: "Sony didn't return a sign-in code. Please try again."
+            case .noCode: "Sign-in did not return a code. Try again."
             case let .http(code): "Sony's server answered with error \(code). Please try again."
             case .badResponse: "Sony's answer didn't contain an account id."
             }
@@ -67,8 +67,9 @@ enum PSNSignIn {
         let (tokenData, tokenResp) = try await session.data(for: req)
         try check(tokenResp)
         guard let token = (try JSONSerialization.jsonObject(with: tokenData) as? [String: Any])?["access_token"] as? String,
-              let escaped = token.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(.init(charactersIn: "-._~"))),
-              let infoURL = URL(string: tokenURL.absoluteString + "/" + escaped) else { throw Failure.badResponse }
+            let escaped = token.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(.init(charactersIn: "-._~"))),
+            let infoURL = URL(string: tokenURL.absoluteString + "/" + escaped)
+        else { throw Failure.badResponse }
 
         // GET <token endpoint>/<quoted token>, built as a string so the token is escaped exactly once.
         var info = URLRequest(url: infoURL)
@@ -79,8 +80,9 @@ enum PSNSignIn {
         let raw = json?["user_id"]
         guard let userID = (raw as? String).flatMap(UInt64.init) ?? (raw as? NSNumber)?.uint64Value else { throw Failure.badResponse }
         var le = userID.littleEndian
-        return Account(accountIDBase64: Data(bytes: &le, count: 8).base64EncodedString(),
-                       onlineID: json?["online_id"] as? String)
+        return Account(
+            accountIDBase64: Data(bytes: &le, count: 8).base64EncodedString(),
+            onlineID: json?["online_id"] as? String)
     }
 
     private static func check(_ response: URLResponse) throws {
@@ -97,9 +99,11 @@ final class BrowserSignInWatcher {
     struct Browser { let name: String; let urlScript: String; let closeScript: String }
 
     private static let safariLike = ["com.apple.Safari", "com.apple.SafariTechnologyPreview"]
-    private static let chromiumLike = ["com.google.Chrome", "com.google.Chrome.canary", "com.microsoft.edgemac",
-                                       "com.brave.Browser", "company.thebrowser.Browser", "com.vivaldi.Vivaldi",
-                                       "com.operasoftware.Opera", "org.chromium.Chromium"]
+    private static let chromiumLike = [
+        "com.google.Chrome", "com.google.Chrome.canary", "com.microsoft.edgemac",
+        "com.brave.Browser", "company.thebrowser.Browser", "com.vivaldi.Vivaldi",
+        "com.operasoftware.Opera", "org.chromium.Chromium",
+    ]
 
     /// The default browser, if it can be scripted; nil means fall back to the clipboard.
     let browser: Browser?
@@ -116,19 +120,23 @@ final class BrowserSignInWatcher {
         let id = appURL.flatMap { Bundle(url: $0)?.bundleIdentifier } ?? ""
         let name = appURL.map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") } ?? "your browser"
         if Self.safariLike.contains(id) {
-            browser = Browser(name: name,
-                              urlScript: "tell application id \"\(id)\" to if (count of windows) > 0 then return URL of current tab of front window",
-                              closeScript: "tell application id \"\(id)\" to close current tab of front window")
+            browser = Browser(
+                name: name,
+                urlScript: "tell application id \"\(id)\" to if (count of windows) > 0 then return URL of current tab of front window",
+                closeScript: "tell application id \"\(id)\" to close current tab of front window")
         } else if Self.chromiumLike.contains(id) {
-            browser = Browser(name: name,
-                              urlScript: "tell application id \"\(id)\" to if (count of windows) > 0 then return URL of active tab of front window",
-                              closeScript: "tell application id \"\(id)\" to close active tab of front window")
+            browser = Browser(
+                name: name,
+                urlScript: "tell application id \"\(id)\" to if (count of windows) > 0 then return URL of active tab of front window",
+                closeScript: "tell application id \"\(id)\" to close active tab of front window")
         } else {
             browser = nil
         }
     }
 
-    var displayName: String { browser?.name ?? browserURL.map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") } ?? "your browser" }
+    var displayName: String {
+        browser?.name ?? browserURL.map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") } ?? "your browser"
+    }
 
     func open(_ url: URL) { NSWorkspace.shared.open(url) }
 
@@ -154,7 +162,7 @@ final class BrowserSignInWatcher {
                 }
                 guard self.sawSignInPage, let code = PSNSignIn.code(fromRedirect: url) else { return }
                 self.stop()
-                _ = NSAppleScript(source: browser.closeScript)?.executeAndReturnError(nil) // close the redirect tab
+                _ = NSAppleScript(source: browser.closeScript)?.executeAndReturnError(nil)  // close the redirect tab
                 NSApp.activate()
                 onCode(code)
             }
@@ -194,10 +202,8 @@ struct PSNSignInSheet: View {
             }
             Divider()
             HStack {
-                Text("Framelift keeps only your account id, never your password or sign-in token.")
-                    .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button(embedded ? "Use \(watcher?.displayName ?? "browser") instead" : "Sign in inside Framelift instead") {
+                Button(embedded ? "Use Browser" : "Sign In Here") {
                     embedded.toggle()
                     if embedded { watcher?.stop() } else { openBrowser() }
                 }
@@ -214,11 +220,9 @@ struct PSNSignInSheet: View {
     private var browserPanel: some View {
         VStack(spacing: 14) {
             if working || !failed { ProgressView().controlSize(.large) }
-            Text(status ?? "Waiting for you to sign in…").font(.title3.weight(.semibold)).multilineTextAlignment(.center)
+            Text(status ?? "Continue in \(watcher?.displayName ?? "your browser")").font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                 .foregroundStyle(failed ? Color.red : Color.primary)
-            Text("Sign in on Sony's page in **\(watcher?.displayName ?? "your browser")**. Your saved password fills in as usual, and Framelift continues by itself when you're done.")
-                .multilineTextAlignment(.center).foregroundStyle(.secondary)
-            Button("Open the sign-in page again") { openBrowser() }
+            Button("Reopen Sign-In Page") { openBrowser() }
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -232,9 +236,13 @@ struct PSNSignInSheet: View {
         lastPasteboardChange = NSPasteboard.general.changeCount
         w.open(PSNSignIn.loginURL)
         if w.browser == nil {
-            status = "When the page says redirect, press ⌘L then ⌘C. Framelift picks it up."
+            status = "After signing in, copy the URL from the browser."
         }
-        w.start(onCode: { handle(code: $0) }, onError: { status = $0; failed = true })
+        w.start(
+            onCode: { handle(code: $0) },
+            onError: {
+                status = $0; failed = true
+            })
     }
 
     /// Fallback for browsers without scripting, or when Automation access was declined.
@@ -243,8 +251,9 @@ struct PSNSignInSheet: View {
         guard pb.changeCount != lastPasteboardChange else { return }
         lastPasteboardChange = pb.changeCount
         guard let text = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              let url = URL(string: text), let code = PSNSignIn.code(fromRedirect: url) else { return }
-        pb.clearContents() // the one-time code shouldn't linger on the clipboard
+            let url = URL(string: text), let code = PSNSignIn.code(fromRedirect: url)
+        else { return }
+        pb.clearContents()  // the one-time code shouldn't linger on the clipboard
         handle(code: code)
     }
 
@@ -252,7 +261,7 @@ struct PSNSignInSheet: View {
         guard !working else { return }
         watcher?.stop()
         working = true; failed = false
-        status = "Signed in. Getting your account id…"
+        status = "Reading account ID…"
         Task {
             do {
                 let account = try await PSNSignIn.accountID(code: code)
@@ -272,7 +281,7 @@ private struct PSNWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent() // no cookies or tokens survive the sheet
+        config.websiteDataStore = .nonPersistent()  // no cookies or tokens survive the sheet
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = context.coordinator
         view.load(URLRequest(url: PSNSignIn.loginURL))
@@ -286,8 +295,10 @@ private struct PSNWebView: NSViewRepresentable {
         private var delivered = false
         init(onCode: @escaping (String) -> Void) { self.onCode = onCode }
 
-        func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
-                     decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        func webView(
+            _ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+            decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
+        ) {
             if let url = action.request.url, let code = PSNSignIn.code(fromRedirect: url) {
                 decisionHandler(.cancel)
                 guard !delivered else { return }

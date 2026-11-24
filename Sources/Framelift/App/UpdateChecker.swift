@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Update check, as Veyra and PushFPS do it: one anonymous request for GitHub's latest release after
-// launch, nothing downloaded. A newer stable release shows a banner that opens its release page.
 import AppKit
 import Foundation
 
@@ -23,7 +21,7 @@ enum ReleaseCheck {
         guard parts.count == 3, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy { ("0"..."9").contains($0) } })
         else { return nil }
         let numbers = parts.compactMap { Int($0) }
-        return numbers.count == 3 ? numbers : nil // a part too big for Int
+        return numbers.count == 3 ? numbers : nil  // a part too big for Int
     }
 
     /// The release in a GitHub "latest release" body when it is newer than `current`, else nil.
@@ -37,9 +35,9 @@ enum ReleaseCheck {
         }
         let release = try JSONDecoder().decode(Body.self, from: body)
         guard !release.draft, !release.prerelease,
-              let remote = version(release.tag_name), let local = version(current),
-              release.html_url == "https://github.com/\(repository)/releases/tag/\(release.tag_name)",
-              let url = URL(string: release.html_url)
+            let remote = version(release.tag_name), let local = version(current),
+            release.html_url == "https://github.com/\(repository)/releases/tag/\(release.tag_name)",
+            let url = URL(string: release.html_url)
         else { throw Invalid() }
         guard local.lexicographicallyPrecedes(remote) else { return nil }
         return Release(version: remote.map(String.init).joined(separator: "."), url: url)
@@ -71,7 +69,6 @@ final class UpdateChecker: ObservableObject {
         if case .available(let release) = status { release } else { nil }
     }
 
-    /// Once per launch, a moment after it, when the setting is on.
     func checkAfterLaunch() {
         guard UpdateChecks.stored() else { return }
         Task {
@@ -80,7 +77,6 @@ final class UpdateChecker: ObservableObject {
         }
     }
 
-    /// Check for Updates… and Check Now: says the result either way.
     func checkNow() {
         Task {
             await check()
@@ -88,23 +84,19 @@ final class UpdateChecker: ObservableObject {
             switch status {
             case .available(let release):
                 alert.messageText = "Framelift \(release.version) is available"
-                alert.informativeText = "You have \(currentVersion ?? "an older version"). Download it from the release page."
-                alert.addButton(withTitle: "Open Release Page")
+                alert.addButton(withTitle: "View Release")
                 alert.addButton(withTitle: "Later")
                 if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(release.url) }
             case .current:
                 alert.messageText = "Framelift is up to date"
-                alert.informativeText = "\(currentVersion ?? "This version") is the latest release."
                 alert.runModal()
             default:
                 alert.messageText = "Couldn't check for updates"
-                alert.informativeText = "GitHub didn't answer. Check your internet connection and try again."
                 alert.runModal()
             }
         }
     }
 
-    /// A check asked for while one runs waits for that one.
     private func check() async {
         if let running { return await running.value }
         let task = Task { await run() }
@@ -115,7 +107,7 @@ final class UpdateChecker: ObservableObject {
 
     private func run() async {
         guard let currentVersion else {
-            status = .failed // a bare SwiftPM binary has no version
+            status = .failed  // a bare SwiftPM binary has no version
             return
         }
         status = .checking

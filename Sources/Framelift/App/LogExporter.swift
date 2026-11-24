@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// "Export Logs…": a redacted zip of the system report and the newest session logs for a bug report.
 import Foundation
 
 struct LogExporter {
@@ -78,37 +77,25 @@ struct LogExporter {
     }
 
     private func readme(sessions: [String]) -> String {
-        let list = sessions.isEmpty
-            ? "  (none: turn on Settings > Debug > Debug logs, reproduce the problem, then export again)"
+        let list =
+            sessions.isEmpty
+            ? "  No sessions. Enable Debug logs and start a stream."
             : sessions.map { "  sessions/\($0)/" }.joined(separator: "\n")
         return """
-        Framelift logs for a bug report
-        ===========================
+            Framelift logs for a bug report
+            ===========================
 
-        Attach this zip to a GitHub bug report. Framelift did not upload anything; this file only leaves
-        your Mac if you send it.
+            Review this zip before attaching it to a bug report.
 
-        What's inside
-          system.txt            Mac, macOS, displays, network type, controller and Framelift settings.
-          sessions/<folder>/    The newest \(Self.sessionCount) streams recorded with Debug logs on:
-            events.log          Event log (redacted).
-            frames.csv          Per-frame timings (numbers only, copied as is).
-            summary.txt         Totals computed from the two files above.
+            system.txt           System and Framelift settings
+            sessions/*/          Event logs, frame timings, and summaries
 
-        Sessions included
-        \(list)
+            Recordings and pairing keys are excluded. Names, account IDs, network addresses,
+            email addresses, and home paths are replaced with placeholders.
 
-        What was removed
-          IP addresses (IPv4 and IPv6) and MAC addresses       -> <ip-N>, <ip6-N>, <mac-addr-N>
-          E-mail addresses                                     -> <email-N>
-          PSN online ID and account ID                         -> <psn-id>, <psn-account>
-          Paired console names, addresses and IDs              -> <console-N>, <console-id-N>
-          Other console and host names                         -> <console>, <host>
-          This Mac's name                                      -> <mac>
-          Your home folder and user name                       -> ~, <user>
-          The same value gets the same token everywhere in this zip.
-          Pairing keys are never read for export.
+            Sessions
+            \(list)
 
-        """
+            """
     }
 }

@@ -39,8 +39,8 @@ enum SessionRetryPolicy {
     /// chiaki `ChiakiQuitReason` values (lib/include/chiaki/session.h).
     enum QuitReason: Int32 {
         case none = 0, stopped, sessionRequestUnknown, sessionRequestConnectionRefused, remotePlayInUse,
-             remotePlayCrash, versionMismatch, ctrlUnknown, ctrlConnectFailed, ctrlConnectionRefused,
-             streamConnectionUnknown, streamRemoteDisconnected, streamRemoteShutdown, psnRegistFailed
+            remotePlayCrash, versionMismatch, ctrlUnknown, ctrlConnectFailed, ctrlConnectionRefused,
+            streamConnectionUnknown, streamRemoteDisconnected, streamRemoteShutdown, psnRegistFailed
     }
 
     /// Network-ish quits (Wi-Fi hiccup, console busy finishing a previous session) that a reconnect can fix.
@@ -51,7 +51,7 @@ enum SessionRetryPolicy {
     static func isTransient(quitReason: Int32, ourSessionLikely: Bool = false) -> Bool {
         switch QuitReason(rawValue: quitReason) {
         case .sessionRequestUnknown, .remotePlayCrash, .ctrlUnknown, .ctrlConnectFailed,
-             .streamConnectionUnknown, .streamRemoteDisconnected:
+            .streamConnectionUnknown, .streamRemoteDisconnected:
             true
         case .remotePlayInUse:
             ourSessionLikely
