@@ -25,6 +25,10 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     weak var delegate: StreamWindowDelegate?
 
     private let window: StreamWindow
+    private weak var loginParent: NSWindow?
+    private weak var loginPrompt: NSWindow?
+    private weak var loginPromptParent: NSWindow?
+    private(set) var hasShown = false
     private let wantsFullscreen: Bool
     private var overlayOn: Bool
     private var eventMonitor: Any?
@@ -35,7 +39,8 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     /// Debug logs on: the latency probe (Cmd+Shift+L) is available.
     private let debugTools: Bool
 
-    init(settings: StreamSettings, title: String, debugTools: Bool) {
+    init(settings: StreamSettings, title: String, debugTools: Bool, loginParent: NSWindow?) {
+        self.loginParent = loginParent
         let screen = settings.targetDisplayID.flatMap(DisplayCatalog.screen(for:)) ?? NSScreen.main ?? NSScreen.screens[0]
         targetScreen = screen
         wantsFullscreen = settings.fullscreen
@@ -77,9 +82,11 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     }
 
     /// The screen the stream is actually on (may differ from the request if AppKit moved the window).
-    var screen: NSScreen? { window.screen }
+    var screen: NSScreen { window.screen ?? targetScreen }
 
     func show() {
+        guard !hasShown, !closingProgrammatically else { return }
+        hasShown = true
         // Fullscreen happens on whichever screen holds the window, so make sure it's the target first.
         if window.screen != targetScreen {
             let frame = window.frame
@@ -98,6 +105,7 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     func close() {
         guard !closingProgrammatically else { return }
         closingProgrammatically = true
+        dismissLoginPrompt()
         teardownInput()
         guard window.styleMask.contains(.fullScreen) else { return finishClose() }
         // Leave fullscreen first so the Space animates away instead of leaving an empty black Space.
@@ -131,10 +139,19 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         cursorHidden = false
     }
 
-    // MARK: Modal prompts on the stream window
+    // MARK: Login prompt
 
     /// The PSN login passcode (4 digits) the console asks for when the user has one set.
     func promptForLoginPin(completion: @escaping (String?) -> Void) {
+        guard loginPrompt == nil, !closingProgrammatically else { return }
+        let parent =
+            hasShown
+            ? window
+            : (loginParent ?? NSApp.mainWindow ?? NSApp.windows.first { $0 !== window && $0.isVisible && $0.canBecomeKey })
+        guard let parent else {
+            completion(nil)
+            return
+        }
         showCursor()
         let alert = NSAlert()
         alert.messageText = "PS5 Login Passcode"
@@ -144,10 +161,20 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         alert.addButton(withTitle: "Sign In")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
-        alert.beginSheetModal(for: window) { [weak self] response in
-            self?.hideCursor()
+        loginPrompt = alert.window
+        loginPromptParent = parent
+        if !parent.isVisible { parent.makeKeyAndOrderFront(nil) }
+        alert.beginSheetModal(for: parent) { [weak self] response in
+            self?.loginPrompt = nil
+            self?.loginPromptParent = nil
+            if let self, self.hasShown, !self.closingProgrammatically { self.hideCursor() }
             completion(response == .alertFirstButtonReturn ? field.stringValue : nil)
         }
+    }
+
+    func dismissLoginPrompt() {
+        guard let prompt = loginPrompt, let parent = loginPromptParent else { return }
+        parent.endSheet(prompt, returnCode: .cancel)
     }
 
     // MARK: Private
