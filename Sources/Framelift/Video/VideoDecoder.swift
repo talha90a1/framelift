@@ -60,7 +60,6 @@ final class VideoDecoder {
 
     /// Any thread; serialised internally. Returns as soon as the frame is queued in VideoToolbox.
     func decode(_ unit: EncodedVideoUnit) {
-        StreamRecorder.shared.append(unit)
         decodeLock.lock()
         let wantKeyframe = decodeLocked(unit)
         decodeLock.unlock()

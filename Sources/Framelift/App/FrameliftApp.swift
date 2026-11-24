@@ -25,7 +25,6 @@ final class FrameliftAppDelegate: NSObject, NSApplicationDelegate {
 struct FrameliftApp: App {
     @NSApplicationDelegateAdaptor(FrameliftAppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel.shared
-    @AppStorage(DebugLogs.defaultsKey) private var debugLogs = DebugLogs.enabledByDefault
 
     var body: some Scene {
         Window("Framelift", id: "main") {
@@ -65,9 +64,7 @@ struct FrameliftApp: App {
                     .disabled(model.isDiscovering)
                 Divider()
                 Button("Show Logs in Finder") { model.revealLogs() }
-                    .disabled(!debugLogs)
                 Button("Export Logs…") { model.exportLogs() }
-                    .disabled(!debugLogs)
             }
         }
 

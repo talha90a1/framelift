@@ -157,6 +157,30 @@ struct SessionSummaryTests {
 }
 
 struct LogFoldersTests {
+    @Test func deleteRemovesLogsAndPreservesRecordings() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let legacy = root.appendingPathComponent("2026-11-24T10-00-00Z-ps5")
+        let logsOnly = root.appendingPathComponent("2026-11-24T10-10-00Z-ps5")
+        let outside = root.appendingPathComponent("other")
+        for folder in [legacy, logsOnly, outside] {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data().write(to: folder.appendingPathComponent("events.log"))
+            try Data().write(to: folder.appendingPathComponent("frames.csv"))
+        }
+        let link = root.appendingPathComponent("2026-11-24T10-20-00Z-ps5")
+        try fm.createSymbolicLink(at: link, withDestinationURL: outside)
+        try Data().write(to: legacy.appendingPathComponent("stream.h265"))
+        try Data().write(to: legacy.appendingPathComponent("stream.times.csv"))
+
+        try LogFolders.deleteLogs(in: root)
+        #expect(LogFolders.sessionsWithLogs(in: root).isEmpty)
+        #expect(try Set(fm.contentsOfDirectory(atPath: legacy.path)) == ["stream.h265", "stream.times.csv"])
+        #expect(!fm.fileExists(atPath: logsOnly.path))
+        #expect(fm.fileExists(atPath: outside.appendingPathComponent("events.log").path))
+    }
+
     @Test func selectsOnlyOldSessionFolders() {
         let sessions = (1...12).map { String(format: "2026-11-%02dT10-00-00Z-ps5", $0) }
         let names = sessions + ["patches", "notes.txt", "2026-11-01-ps5", "2026-11-30T10-00-00Z-"]

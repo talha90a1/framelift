@@ -56,7 +56,7 @@ struct LogExporter {
         let redactor = LogRedactor(context: context)
         let staging = parent.appendingPathComponent(baseName, isDirectory: true)
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
-        let sessions = Array(LogFolders.sessionFolders(in: logsRoot).prefix(Self.sessionCount))
+        let sessions = Array(LogFolders.sessionsWithLogs(in: logsRoot).prefix(Self.sessionCount))
         for folder in sessions {
             let out = staging.appendingPathComponent("sessions/\(folder.lastPathComponent)", isDirectory: true)
             try fm.createDirectory(at: out, withIntermediateDirectories: true)

@@ -50,10 +50,9 @@ final class Diagnostics: @unchecked Sendable {
     // MARK: lifecycle
 
     /// `header` (the system report) goes at the top of events.log, before the timestamped lines.
-    func beginSession(label: String, header: String = "") {
+    func beginSession(label: String, date: Date = Date(), header: String = "") {
         guard enabled else { return }
-        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let dir = LogFolders.root.appendingPathComponent("\(stamp)-\(label)", isDirectory: true)
+        let dir = LogFolders.root.appendingPathComponent(LogFolders.sessionName(label: label, date: date), isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let frames = dir.appendingPathComponent("frames.csv"), events = dir.appendingPathComponent("events.log")
         FileManager.default.createFile(

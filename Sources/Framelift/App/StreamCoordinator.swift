@@ -41,6 +41,7 @@ final class StreamCoordinator: ObservableObject {
 
     private var target: StreamTarget?
     private var settings = StreamSettings()
+    private var recorder: StreamRecorder?
     private var traceActive = false
     /// "Debug logs", sampled when the stream starts: trace files, core INFO lines, latency probes.
     private(set) var debugLogs = false
@@ -84,7 +85,12 @@ final class StreamCoordinator: ObservableObject {
         debugLogs = DebugLogs.stored()
         retriesLeft = SessionRetryPolicy.maxRetries
         phase = .connecting("Connecting to \(target.title)…")
-        beginTrace()
+        let startedAt = Date()
+        beginTrace(startedAt: startedAt)
+        if VideoRecording.stored() {
+            let name = LogFolders.sessionName(label: "ps5", date: startedAt)
+            recorder = StreamRecorder(directory: VideoRecording.root.appendingPathComponent(name, isDirectory: true))
+        }
 
         let window = StreamWindowController(
             settings: settings, title: target.title, debugTools: debugLogs,
@@ -179,8 +185,10 @@ final class StreamCoordinator: ObservableObject {
                 }
             })
         let bytes = videoBytes
+        let recorder = recorder
         session.onVideo = { unit in
             bytes.add(unit.data.count)
+            recorder?.append(unit)
             decoder.decode(unit)
         }
         let audio = audio
@@ -331,14 +339,17 @@ final class StreamCoordinator: ObservableObject {
         let source = source
         let audio = audio
         let engine = engine
+        let recorder = recorder
         self.source = nil
         self.audio = nil
+        self.recorder = nil
         window?.close()
         window = nil
         endDisplayActivity()
 
         Self.offMain({
             source?.stop()
+            recorder?.finish()
             audio?.stop()
         }) { [weak self] in
             // The engine outlives the source so in-flight decoder output still has a sink.
@@ -356,12 +367,12 @@ final class StreamCoordinator: ObservableObject {
 
     // MARK: Diagnostics
 
-    private func beginTrace() {
+    private func beginTrace(startedAt: Date) {
         endTrace()
         Diagnostics.shared.enabled = debugLogs
         guard debugLogs else { return }
         Diagnostics.shared.beginSession(
-            label: "ps5",
+            label: "ps5", date: startedAt,
             header: SystemReport.make(
                 settings: settings, controller: input.controllerName, controllerFeedback: input.feedbackSummary))
         traceActive = true
