@@ -21,19 +21,21 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Check release tag
-        if: github.event_name == 'push' && github.ref_type == 'tag'
+      - name: Check release version
         run: |
           version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match app version $version"
-            exit 1
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match app version $version"
+              exit 1
+            fi
+            git merge-base --is-ancestor HEAD origin/main
+            if ! grep -qF 'static let enabledByDefault = false' Sources/Framelift/Shared/Diagnostics.swift; then
+              echo "::error::Turn off Debug logs by default before releasing"
+              exit 1
+            fi
           fi
-          git merge-base --is-ancestor HEAD origin/main
-          if ! grep -qF 'static let enabledByDefault = false' Sources/Framelift/Shared/Diagnostics.swift; then
-            echo "::error::Turn off Debug logs by default before releasing"
-            exit 1
-          fi
+          printf 'FRAMELIFT_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
           scripts/release_notes.sh "$version" > "$RUNNER_TEMP/release-notes.md"
 
       - name: Select the newest Xcode
@@ -72,24 +74,25 @@ jobs:
         run: scripts/release.sh
 
       - name: Package corresponding source
-        if: github.event_name == 'push' && github.ref_type == 'tag'
         run: |
-          scripts/release_source.py "${GITHUB_REF_NAME#v}"
+          scripts/release_source.py "$FRAMELIFT_VERSION"
           cp "$RUNNER_TEMP/release-notes.md" dist/
 
       - name: Write appcast
-        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="$FRAMELIFT_VERSION"
+          archive="Framelift-$version-macOS-arm64.zip"
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/v$version/$archive"
           mkdir -p "$RUNNER_TEMP/updates"
-          cp "dist/Framelift-$version-macOS-arm64.zip" "$RUNNER_TEMP/updates/"
+          cp "dist/$archive" "$RUNNER_TEMP/updates/"
           scripts/release_notes.sh --changes "$version" > "$RUNNER_TEMP/updates/Framelift-$version-macOS-arm64.md"
           echo "$SPARKLE_PRIVATE_KEY" | .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
             --ed-key-file - --embed-release-notes \
-            --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" \
+            --download-url-prefix "${url%/*}/" \
             -o dist/appcast.xml "$RUNNER_TEMP/updates"
+          swift scripts/verify_appcast.swift dist/appcast.xml "dist/$archive" "$url"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
