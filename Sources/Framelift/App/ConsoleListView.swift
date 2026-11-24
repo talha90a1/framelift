@@ -6,6 +6,7 @@ struct ConsoleListView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var store: ConsoleStore
     @EnvironmentObject private var coordinator: StreamCoordinator
+    @EnvironmentObject private var updates: UpdateChecker
     @State private var pairing: PairRequest?
     @State private var removing: PairedConsole?
     @State private var showCableSetup = false
@@ -46,6 +47,10 @@ struct ConsoleListView: View {
                         }
                     }
                 }
+            }
+            if let release = updates.available, !updates.bannerHidden {
+                Divider()
+                UpdateBanner(release: release, hide: { updates.bannerHidden = true })
             }
             if showsCableTip {
                 Divider()
@@ -116,6 +121,27 @@ private struct CableTip: View {
             Spacer()
             Button("How?", action: showSetup)
             Button("Don't Show Again", action: hide)
+                .buttonStyle(.borderless)
+                .font(.callout)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+}
+
+private struct UpdateBanner: View {
+    var release: Release
+    var hide: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.down.circle")
+                .foregroundStyle(.secondary)
+            Text("Framelift \(release.version) is available.")
+                .font(.callout)
+            Spacer()
+            Button("Release Page") { NSWorkspace.shared.open(release.url) }
+            Button("Later", action: hide)
                 .buttonStyle(.borderless)
                 .font(.callout)
         }

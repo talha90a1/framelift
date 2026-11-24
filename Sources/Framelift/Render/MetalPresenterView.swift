@@ -106,6 +106,7 @@ final class MetalPresenterView: NSView {
     /// Final-present encoder (YUV->RGB, upscale, HUD). Render thread.
     private(set) var presentEncoder: PresentEncoder?
     private var hud: HUDText?
+    var sharpness: Float = Float(StreamSettingsLimits.defaultSharpness)
     /// Method the last present used (render thread).
     private(set) var lastUpscaleMethod: UpscaleMethod = .bilinear
     /// Colour handling (any thread; applied on the next present). Follows the app setting stored
@@ -392,6 +393,7 @@ final class MetalPresenterView: NSView {
         guard let drawable = next, let cb = ctx.queue.makeCommandBuffer() else { return false }
         cb.label = "framelift.present"
         updateColour()
+        presentEncoder.sharpness = sharpness
         guard let (method, keep) = presentEncoder.encode(frame, into: drawable.texture, commandBuffer: cb,
                                                          hud: hudVisible ? hud?.texture : nil) else { return false }
         if method != lastUpscaleMethod {

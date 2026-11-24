@@ -29,7 +29,9 @@ enum StreamPreset: String, CaseIterable, Identifiable {
 }
 
 enum StreamSettingsLimits {
-    static let bitrateRangeKbps: ClosedRange<UInt32> = 2000...50000
+    static let bitrateRangeKbps: ClosedRange<UInt32> = 2000...100_000
+    static let sharpnessRange: ClosedRange<Double> = 0...1.5
+    static let defaultSharpness = 0.5
 }
 
 /// Loads and saves `StreamSettings` as JSON in UserDefaults. Unknown or corrupt data falls back to defaults.
@@ -61,6 +63,9 @@ struct SettingsStore {
         if result.codec == .hevcHDR { result.codec = .hevc }
         let range = StreamSettingsLimits.bitrateRangeKbps
         result.bitrateKbps = min(max(result.bitrateKbps, range.lowerBound), range.upperBound)
+        let sharp = StreamSettingsLimits.sharpnessRange
+        result.sharpness = result.sharpness.isFinite
+            ? min(max(result.sharpness, sharp.lowerBound), sharp.upperBound) : StreamSettingsLimits.defaultSharpness
         return result
     }
 

@@ -105,6 +105,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         perform {
             self.pacer.reset()
             self.rebuildBackends()
+            self.view.sharpness = Float(settings.sharpness)
         }
         Diagnostics.shared.event("render: frame generation Apple ML interpolation")
     }
@@ -115,6 +116,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         perform {
             let old = self.settings
             self.settings = new
+            self.view.sharpness = Float(new.sharpness)
             if old.width != new.width || old.height != new.height {
                 self.rebuildBackends()
             }
