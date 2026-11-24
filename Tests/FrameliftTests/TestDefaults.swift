@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import Foundation
 
-/// Clears a test's private defaults domain and deletes the empty plist that cfprefsd otherwise
-/// leaves behind in ~/Library/Preferences, so test runs don't pile up files there.
+/// A fresh defaults suite for one test. A full path as the suite name makes cfprefsd keep the plist in the
+/// temporary folder instead of ~/Library/Preferences, so test runs don't pile up files there.
+func testDefaultsSuite() -> String {
+    FileManager.default.temporaryDirectory.appending(path: "framelift-tests/\(UUID().uuidString)").path
+}
+
+/// Clears a test's defaults suite and deletes its plist.
 func removeTestDefaults(_ suite: String) {
     UserDefaults.standard.removePersistentDomain(forName: suite)
-    CFPreferencesAppSynchronize(suite as CFString)
-    try? FileManager.default.removeItem(at: URL.libraryDirectory.appending(path: "Preferences/\(suite).plist"))
+    try? FileManager.default.removeItem(atPath: suite + ".plist")
 }
