@@ -137,10 +137,56 @@ void stopWaitsForCallbackAndExceptionsJoin() {
     CHECK(completed);
     inbox.invalidate(); inbox.finishStop();
 }
+
+void chiakiFrameGapsKeepUsableReferences() {
+    SessionInbox inbox;
+    auto token = inbox.begin(monotonic100ns());
+    CHECK(deliverChiakiVideo(token, sample(token, SampleKind::CodecConfig, 0)) == VideoDelivery::Queued);
+    CHECK(deliverChiakiVideo(token, sample(token, SampleKind::AccessUnit, 65533, true)) == VideoDelivery::Queued);
+    CHECK(inbox.tryVideo(monotonic100ns())->resetDecoder);
+
+    auto next = sample(token, SampleKind::AccessUnit, 65535);
+    next.framesLost = 1;
+    CHECK(deliverChiakiVideo(token, std::move(next)) == VideoDelivery::Queued);
+    auto frame = inbox.tryVideo(monotonic100ns());
+    CHECK(frame && !frame->resetDecoder && !frame->configBefore && frame->sample.framesLost == 1);
+
+    next = sample(token, SampleKind::AccessUnit, 2);
+    next.framesLost = 2;
+    next.referenceRecovered = true;
+    CHECK(deliverChiakiVideo(token, std::move(next)) == VideoDelivery::Queued);
+    frame = inbox.tryVideo(monotonic100ns());
+    CHECK(frame && !frame->resetDecoder && frame->sample.referenceRecovered);
+    CHECK(!inbox.snapshot().video.waitingForIdr);
+    CHECK(!inbox.takeIdrRequest(monotonic100ns()));
+    CHECK(deliverChiakiVideo(token, sample(token, SampleKind::AccessUnit, 2)) == VideoDelivery::Discarded);
+
+    inbox.decodeFailed(token.generation());
+    CHECK(deliverChiakiVideo(token, sample(token, SampleKind::AccessUnit, 3)) == VideoDelivery::Discarded);
+    CHECK(inbox.takeIdrRequest(monotonic100ns()));
+    CHECK(deliverChiakiVideo(token, sample(token, SampleKind::AccessUnit, 4, true)) == VideoDelivery::Queued);
+    frame = inbox.tryVideo(monotonic100ns());
+    CHECK(frame && frame->resetDecoder && frame->configBefore);
+    inbox.invalidate(); inbox.finishStop();
+}
+
+void uncheckedFrameGapsStillRequireAKeyframe() {
+    SessionInbox inbox;
+    auto token = inbox.begin(monotonic100ns());
+    CHECK(token.video(sample(token, SampleKind::CodecConfig, 0)));
+    CHECK(token.video(sample(token, SampleKind::AccessUnit, 1, true)));
+    CHECK(inbox.tryVideo(monotonic100ns()).has_value());
+    CHECK(!token.video(sample(token, SampleKind::AccessUnit, 3)));
+    CHECK(inbox.snapshot().video.waitingForIdr);
+    CHECK(inbox.takeIdrRequest(monotonic100ns()));
+    inbox.invalidate(); inbox.finishStop();
+}
 } // namespace
 
 int main() {
     blockedVideoDoesNotBlockOwnerAndRetainsRecovery();
     stopWaitsForCallbackAndExceptionsJoin();
+    chiakiFrameGapsKeepUsableReferences();
+    uncheckedFrameGapsStillRequireAKeyframe();
     std::puts("video delivery: blocked callback, bounded recovery, owner progress and join passed");
 }

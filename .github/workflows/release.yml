@@ -54,6 +54,9 @@ jobs:
       - name: Test
         run: swift test
 
+      - name: Test video recovery with sanitizers
+        run: Tests/video_delivery_test.sh asan
+
       - name: Import signing certificate
         env:
           CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}

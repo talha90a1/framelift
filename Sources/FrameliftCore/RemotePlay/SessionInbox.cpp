@@ -40,6 +40,8 @@ void SessionInbox::requestIdr(Generation g){auto& s=*shared_;std::lock_guard l(s
 VideoDelivery deliverChiakiVideo(const SessionInbox::Token& token,VideoSample sample) noexcept{
     const auto bytes=sample.payload.bytes();
     if(bytes.empty()||!inspectAnnexB(bytes,sample.codec).valid)return VideoDelivery::Malformed;
+    // Chiaki checks picture references and repairs recoverable gaps before this callback.
+    sample.referencesValidated=true;
     return token.video(std::move(sample))?VideoDelivery::Queued:VideoDelivery::Discarded;
 }
 SessionInbox::Snapshot SessionInbox::snapshot()const{

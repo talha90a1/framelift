@@ -60,7 +60,7 @@ PushStatus VideoIngress::push(VideoSample sample,HostTime now) {
     if(sample.wireFrameIndex){
         const auto seq=sequence_.observe(*sample.wireFrameIndex);
         if(!seq.accepted){++stats_.rejected;return PushStatus::Malformed;}
-        if(seq.gap)recoverLocked();
+        if(seq.gap&&!sample.referencesValidated)recoverLocked();
     }
     // Framelift: chiaki only passes frames whose references are intact, so loss flags are not a reason to drop
     // until IDR; the app's decoder requests an IDR only on a real decode error.

@@ -279,7 +279,9 @@ BackendResult ChiakiBackend::start(const NativeConnectRequest& request,SessionIn
     info.video_profile.codec=request.video.codec==Codec::H264?CHIAKI_CODEC_H264:request.video.codec==Codec::H265Hdr?CHIAKI_CODEC_H265_HDR:CHIAKI_CODEC_H265;
     info.video_profile.bitrate=request.video.bitrateKbps;
     info.video_profile_auto_downgrade=false;info.enable_keyboard=false;info.enable_dualsense=true;
-    info.auto_regist=false;info.packet_loss_max=0.05;info.enable_idr_on_fec_failure=false /* chiaki-ng's default; reference-recovery frames keep the picture moving */;
+    info.auto_regist=false;
+    info.packet_loss_max=request.internetSession?1.0:0.05;
+    info.enable_idr_on_fec_failure=false; // Keep usable reference-recovery frames after packet loss.
     const auto code=chiaki_session_init(&s.session,&info,&s.log);
     wipe(info.regist_key,sizeof(info.regist_key));wipe(info.morning,sizeof(info.morning));wipe(info.psn_account_id,sizeof(info.psn_account_id));
     if(code!=CHIAKI_ERR_SUCCESS){auto out=s.record(code,"chiaki_session_init");s.token.failed(out.code);p_.reset();return out;}

@@ -68,6 +68,9 @@ jobs:
       - name: Test
         run: swift test
 
+      - name: Test video recovery with sanitizers
+        run: Tests/video_delivery_test.sh asan
+
   lint:
     # Advisory: shows swift-format warnings for the Swift files a pull request changes, without failing.
     if: github.event_name == 'pull_request'
