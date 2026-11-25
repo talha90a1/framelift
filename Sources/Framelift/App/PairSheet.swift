@@ -10,12 +10,11 @@ struct PairSheet: View {
     @State private var accountID = ""
     @State private var pin = ""
     @State private var isPairing = false
+    @State private var pairingTask: Task<Void, Never>?
     @State private var error: String?
     @State private var showSignIn = false
     @State private var manualAccount = false
     @AppStorage("framelift.psnOnlineID") private var onlineID = ""
-
-    private static let accountLookupURL = URL(string: "https://www.psntools.com/psn/checker")!
 
     init(initialHost: String) {
         _host = State(initialValue: initialHost)
@@ -30,21 +29,21 @@ struct PairSheet: View {
                 LabeledContent("PlayStation account") {
                     VStack(alignment: .leading, spacing: 8) {
                         if accountID.isEmpty {
-                            Text("Not signed in").foregroundStyle(.secondary)
+                            Text("Choose the account used on your PS5").foregroundStyle(.secondary)
                         } else {
-                            Label(onlineID.isEmpty ? "Account ID entered" : "Signed in as \(onlineID)", systemImage: "checkmark.circle.fill")
+                            Label(onlineID.isEmpty ? "Account ID entered" : "Pairing as \(onlineID)", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
                                 .lineLimit(1)
                         }
                         HStack(spacing: 8) {
                             Button(accountID.isEmpty ? "Sign in with PlayStation" : "Sign In Again") { showSignIn = true }
                             if !accountID.isEmpty {
-                                Button("Sign Out") { signOut() }
+                                Button("Clear Account") { signOut() }
                             }
                             Button(manualAccount ? "Hide ID" : "Enter ID…") { manualAccount.toggle() }
                                 .help("Paste an account id manually (for example from chiaki-ng's psn-account-id script)")
                         }
-                        .fixedSize()
+
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -62,7 +61,6 @@ struct PairSheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("On the PS5, open **Settings › System › Remote Play › Pair Device** to get the PIN.")
                 Text("Use the PlayStation account that opened **Pair Device** on the PS5.")
-                if manualAccount { Link("Look up account ID", destination: Self.accountLookupURL) }
             }
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -76,9 +74,9 @@ struct PairSheet: View {
             HStack {
                 if isPairing { ProgressView().controlSize(.small); Text("Pairing…") }
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Cancel", role: .cancel) { pairingTask?.cancel(); dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Pair") { Task { await pair() } }
+                Button("Pair") { pairingTask = Task { await pair() } }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canPair)
             }
@@ -92,6 +90,7 @@ struct PairSheet: View {
                 model.consoles.psnAccountIDBase64 = account.accountIDBase64
             }
         }
+        .onDisappear { pairingTask?.cancel() }
         .onAppear {
             if accountID.isEmpty { accountID = model.consoles.psnAccountIDBase64 ?? "" }
         }
@@ -121,10 +120,13 @@ struct PairSheet: View {
         defer { isPairing = false }
         do {
             let (console, credentials) = try await ConsolePairing.pair(host: trimmedHost, accountID: account, pin: pin)
+            try Task.checkCancellation()
             try model.consoles.save(console, credentials: credentials)
             model.consoles.psnAccountIDBase64 = account.base64EncodedString()
             await model.discover()
             dismiss()
+        } catch is CancellationError {
+            return
         } catch {
             let text = error.localizedDescription
             if text.contains("Invalid PSN ID") {

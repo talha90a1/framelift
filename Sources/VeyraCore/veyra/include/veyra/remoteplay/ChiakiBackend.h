@@ -31,6 +31,7 @@ struct NativeConnectRequest {
     std::string host;
     VideoProfile video;
     PairingCredentials credentials;
+    void* internetSession = nullptr;
 };
 struct NativeSnapshot {
     bool connected=false;

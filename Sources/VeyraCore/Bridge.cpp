@@ -7,6 +7,7 @@
 #include "VeyraBridge.h"
 #include "ControllerOutbox.h"
 #include "LogRedaction.h"
+#include "PSNConnection.h"
 #include "veyra/remoteplay/ChiakiBackend.h"
 #include "veyra/remoteplay/Discovery.h"
 #include "veyra/remoteplay/SessionInbox.h"
@@ -153,6 +154,10 @@ struct VRSession {
     std::string host;
     VideoProfile profile;
     PairingCredentials credentials; // moved into the connect request on the owner thread
+    std::string accessToken;
+    std::array<uint8_t, 32> consoleUid{};
+    std::unique_ptr<PSNConnection> psn;
+    ~VRSession() { if (!accessToken.empty()) wipe(accessToken.data(), accessToken.size()); }
     std::thread owner;
 
     // Command/wake state. Never held while calling the inbox, the backend or a C callback.
@@ -204,18 +209,42 @@ void VRSession::run() noexcept {
         SessionInbox inbox;
         inbox.setWakeHook(&VRSession::wakeHook, this);
         ChiakiBackend backend;
+        struct RemoteBorrow {
+            PSNConnection* connection;
+            ~RemoteBorrow() { if (connection) connection->disarm(); }
+        } remoteBorrow{psn.get()};
         auto token = inbox.begin(monotonic100ns());
         const auto generation = token.generation();
         NativeConnectRequest request;
         request.host = host;
         request.video = profile;
         request.credentials = std::move(credentials);
-        const auto startResult = backend.start(request, std::move(token));
+        BackendResult startResult;
+        if (psn) {
+            const auto error = psn->prepare(accessToken.c_str(), consoleUid.data(), [this](int stage) {
+                emitEvent(VR_EVENT_CONNECTION_PROGRESS, stage);
+            });
+            wipe(accessToken.data(), accessToken.size());
+            accessToken.clear();
+            if (error != CHIAKI_ERR_SUCCESS) {
+                inbox.invalidate(); inbox.finishStop();
+                finishStart(-2101);
+                emitEvent(VR_EVENT_FAILED, error == CHIAKI_ERR_CANCELED ? 14 : -2101);
+                return;
+            }
+            startResult = psn->handoff([&](auto handle) {
+                request.internetSession = handle;
+                return backend.start(request, std::move(token));
+            });
+        } else {
+            startResult = backend.start(request, std::move(token));
+        }
         request.credentials = PairingCredentials{}; // wipe the copy now that chiaki has it
         if (!startResult.ok) {
             inbox.invalidate();
             if (backend.stop().ok) inbox.finishStop();
             finishStart(errorFrom(startResult));
+            if (psn) emitEvent(VR_EVENT_FAILED, errorFrom(startResult));
             return;
         }
         started = true;
@@ -290,7 +319,10 @@ void VRSession::run() noexcept {
             }
             while (auto block = inbox.tryAudio()) {
                 audioQueueLatency.add(ms100ns(block->arrival100ns, monotonic100ns()));
-                if (callbacks.audio && block->channels)
+                if (callbacks.audio_timed && block->channels)
+                    callbacks.audio_timed(callbacks.user, block->samples.data(), block->frames(), block->channels,
+                                         block->rate, block->firstSample, hostTimeFromArrival(block->arrival100ns), block->discontinuity);
+                else if (callbacks.audio && block->channels)
                     callbacks.audio(callbacks.user, block->samples.data(), block->frames(), block->channels,
                                     block->rate);
                 ++audioBlocks;
@@ -425,6 +457,7 @@ void VRSession::run() noexcept {
 
         // Veyra's required order: invalidate (stale callbacks rejected), stop+join Chiaki, finishStop.
         inbox.invalidate();
+        if (psn) { psn->cancel(); psn->disarm(); }
         const auto stopped = backend.stop();
         if (stopped.ok) {
             inbox.finishStop();
@@ -451,8 +484,8 @@ int32_t vr_init(void) {
     }
 }
 
-VRSession* vr_session_start(const char* host, const VRCredentials* credentials, const VRVideoProfile* profile,
-                            const VRCallbacks* callbacks, int32_t* error_out) {
+static VRSession* startSession(const char* host, const VRCredentials* credentials, const VRVideoProfile* profile,
+                            const VRCallbacks* callbacks, const char* accessToken, const uint8_t* uid, int32_t* error_out) {
     auto fail = [&](int32_t code) -> VRSession* {
         if (error_out) *error_out = code;
         return nullptr;
@@ -471,6 +504,12 @@ VRSession* vr_session_start(const char* host, const VRCredentials* credentials, 
         session->callbacks = *callbacks;
         session->host = host;
         session->profile = video;
+        if (accessToken) {
+            if (!*accessToken || !uid || std::all_of(uid, uid + 32, [](auto b) { return b == 0; })) return fail(kErrInvalidArgument);
+            session->accessToken = accessToken;
+            std::copy_n(uid, 32, session->consoleUid.begin());
+            session->psn = std::make_unique<PSNConnection>();
+        }
         std::memcpy(session->credentials.accountId.data(), credentials->account_id, 8);
         std::memcpy(session->credentials.registrationKey.data(), credentials->regist_key, 16);
         std::memcpy(session->credentials.sessionKey.data(), credentials->morning, 16);
@@ -478,7 +517,7 @@ VRSession* vr_session_start(const char* host, const VRCredentials* credentials, 
         auto* raw = session.get();
         raw->owner = std::thread([raw] { raw->run(); });
         int32_t error = 0;
-        {
+        if (!accessToken) {
             std::unique_lock lock(raw->mutex);
             raw->cv.wait(lock, [&] { return raw->startDone; });
             error = raw->startError;
@@ -495,6 +534,17 @@ VRSession* vr_session_start(const char* host, const VRCredentials* credentials, 
     }
 }
 
+VRSession* vr_session_start(const char* host, const VRCredentials* credentials, const VRVideoProfile* profile,
+                            const VRCallbacks* callbacks, int32_t* error_out) {
+    return startSession(host, credentials, profile, callbacks, nullptr, nullptr, error_out);
+}
+
+VRSession* vr_session_start_psn(const char* accessToken, const uint8_t uid[32], const VRCredentials* credentials,
+                            const VRVideoProfile* profile, const VRCallbacks* callbacks, int32_t* error_out) {
+    if (!accessToken || !uid) { if (error_out) *error_out = kErrInvalidArgument; return nullptr; }
+    return startSession("127.0.0.1", credentials, profile, callbacks, accessToken, uid, error_out);
+}
+
 void vr_session_stop(VRSession* session) {
     if (!session) return;
     {
@@ -502,6 +552,7 @@ void vr_session_stop(VRSession* session) {
         session->stopRequested = true;
     }
     session->cv.notify_all();
+    if (session->psn) session->psn->cancel();
     if (session->owner.joinable()) session->owner.join();
     bool leaked = false;
     {

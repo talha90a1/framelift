@@ -74,6 +74,7 @@ struct SettingsStore {
         result.sharpness =
             result.sharpness.isFinite
             ? min(max(result.sharpness, sharp.lowerBound), sharp.upperBound) : StreamSettingsLimits.defaultSharpness
+        result.audioOffsetMs = result.audioOffsetMs.isFinite ? min(250, max(-250, result.audioOffsetMs)) : 0
         return result
     }
 

@@ -12,7 +12,7 @@ for src in Sources/VeyraCore/*.cpp Sources/VeyraCore/veyra/*.cpp; do
   xcrun clang++ $CXXFLAGS -c "$src" -o "$obj"
   OBJS="$OBJS $obj"
 done
-xcrun clang -ISources/VeyraCore/include -c Tests/core_smoke.c -o "$OUT/core_smoke.o"
+xcrun clang -ISources/VeyraCore/include -Ibuild/chiaki-dist/include -c Tests/core_smoke.c -o "$OUT/core_smoke.o"
 xcrun clang++ "$OUT/core_smoke.o" $OBJS build/chiaki-dist/lib/libchiaki.a \
   build/chiaki-dist/lib/libcurl.a build/chiaki-dist/lib/libprotobuf-nanopb.a build/chiaki-dist/lib/libjerasure.a \
   build/chiaki-dist/lib/libgf_complete.a build/chiaki-dist/lib/libopus.a build/chiaki-dist/lib/libjson-c.a \

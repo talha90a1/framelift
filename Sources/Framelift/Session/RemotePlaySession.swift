@@ -8,6 +8,13 @@ struct RemotePlaySessionError: LocalizedError {
     var errorDescription: String? { SessionMessages.errorMessage(code: code) }
 }
 
+struct InternetConnection: CustomStringConvertible, CustomDebugStringConvertible {
+    var accessToken: String
+    var deviceID: Data
+    var description: String { "InternetConnection(<redacted>)" }
+    var debugDescription: String { description }
+}
+
 final class RemotePlaySession: ControllerSink {
     /// Called on the core's session thread with each Annex-B access unit (or codec config).
     var onVideo: ((EncodedVideoUnit) -> Void)?
@@ -21,6 +28,7 @@ final class RemotePlaySession: ControllerSink {
     private let host: String
     private let credentials: ConsoleCredentials
     private let settings: StreamSettings
+    private let internet: InternetConnection?
     private let lock = NSLock()
     private var handle: OpaquePointer?
     private var box: Unmanaged<CallbackBox>?
@@ -36,10 +44,11 @@ final class RemotePlaySession: ControllerSink {
         }
     }
 
-    init(host: String, credentials: ConsoleCredentials, settings: StreamSettings) {
+    init(host: String, credentials: ConsoleCredentials, settings: StreamSettings, internet: InternetConnection? = nil) {
         self.host = host
         self.credentials = credentials
         self.settings = settings
+        self.internet = internet
     }
 
     /// The last reference may drop inside a core callback (which holds a temporary strong ref);
@@ -79,7 +88,7 @@ final class RemotePlaySession: ControllerSink {
         var callbacks = VRCallbacks()
         callbacks.user = box.toOpaque()
         callbacks.video = Self.videoCallback
-        callbacks.audio = Self.audioCallback
+        callbacks.audio_timed = Self.audioCallback
         callbacks.event = Self.eventCallback
         callbacks.triggers = Self.triggersCallback
         callbacks.haptics = Self.hapticsCallback
@@ -87,7 +96,19 @@ final class RemotePlaySession: ControllerSink {
         var cCredentials = BridgeInterop.credentials(credentials)
         defer { BridgeInterop.wipe(&cCredentials) }
         var error: Int32 = 0
-        guard let session = vr_session_start(host, &cCredentials, &profile, &callbacks, &error) else {
+        let started: OpaquePointer?
+        if let internet, internet.deviceID.count == 32 {
+            started = internet.deviceID.withUnsafeBytes { bytes in
+                vr_session_start_psn(internet.accessToken, bytes.bindMemory(to: UInt8.self).baseAddress,
+                                     &cCredentials, &profile, &callbacks, &error)
+            }
+        } else if internet != nil {
+            started = nil
+            error = -2001
+        } else {
+            started = vr_session_start(host, &cCredentials, &profile, &callbacks, &error)
+        }
+        guard let session = started else {
             box.release()
             throw RemotePlaySessionError(code: error != 0 ? error : -2002)
         }
@@ -202,12 +223,13 @@ final class RemotePlaySession: ControllerSink {
     }
 
     private static let audioCallback: @convention(c) (
-        UnsafeMutableRawPointer?, UnsafePointer<Int16>?, Int, UInt32, UInt32
-    ) -> Void = { user, pcm, frames, channels, rate in
+        UnsafeMutableRawPointer?, UnsafePointer<Int16>?, Int, UInt32, UInt32, UInt64, UInt64, Bool
+    ) -> Void = { user, pcm, frames, channels, rate, first, arrival, discontinuity in
         guard let (_, session) = session(user), let pcm, frames > 0, channels > 0,
               let onAudio = session.onAudio else { return }
         let samples = Array(UnsafeBufferPointer(start: pcm, count: frames * Int(channels)))
-        onAudio(PCMChunk(samples: samples, channels: channels, sampleRate: rate))
+        onAudio(PCMChunk(samples: samples, channels: channels, sampleRate: rate,
+                        firstSample: first, arrivalHostTime: arrival, discontinuity: discontinuity))
     }
 
     private static let eventCallback: @convention(c) (
@@ -216,6 +238,8 @@ final class RemotePlaySession: ControllerSink {
         guard let (_, session) = session(user) else { return }
         let event: SessionEvent
         switch type {
+        case VR_EVENT_CONNECTION_PROGRESS:
+            event = .connectionProgress(code)
         case VR_EVENT_RUMBLE:
             session.onFeedback?(.rumble(left: UInt8(clamping: a), right: UInt8(clamping: b)))
             return

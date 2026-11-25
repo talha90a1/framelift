@@ -8,6 +8,7 @@ struct ConsoleListView: View {
     @EnvironmentObject private var input: InputManager
     @State private var pairing: PairRequest?
     @State private var removing: PairedConsole?
+    @State private var internetConsole: PairedConsole?
     @State private var showCableSetup = false
     @AppStorage("framelift.hideCableTip") private var hideCableTip = false
 
@@ -29,8 +30,15 @@ struct ConsoleListView: View {
                             Task { await model.wake(console) }
                         } connect: {
                             Task { await model.connect(console) }
+                        } internet: {
+                            internetConsole = console
                         }
                         .contextMenu {
+                            Button("Connect over Internet…") { internetConsole = console }
+                                .disabled(isBusy)
+                            if console.lastSettings != nil {
+                                Button("Use Last Settings") { model.useLastSettings(console) }
+                            }
                             Button("Pair Again…") { pairing = PairRequest(host: console.host) }
                             Button("Remove…", role: .destructive) { removing = console }
                         }
@@ -85,6 +93,9 @@ struct ConsoleListView: View {
             }
         }
         .sheet(isPresented: $showCableSetup) { CableSetupSheet() }
+        .sheet(item: $internetConsole) { console in
+            InternetConsoleSheet(account: model.psn, console: console).environmentObject(model)
+        }
         .sheet(item: $pairing) { request in
             PairSheet(initialHost: request.host)
                 .environmentObject(model)
@@ -175,6 +186,7 @@ private struct PairedConsoleRow: View {
     var busy: Bool
     var wake: () -> Void
     var connect: () -> Void
+    var internet: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -190,15 +202,20 @@ private struct PairedConsoleRow: View {
             Button("Wake", action: wake)
                 .disabled(busy)
                 .help("Turn the PS5 on from rest mode")
-            Button("Connect", action: connect)
-                .buttonStyle(.borderedProminent)
-                .disabled(busy)
+            Menu {
+                Button("On This Network", action: connect)
+                Button("Over Internet…", action: internet)
+            } label: { Text("Connect") } primaryAction: { connect() }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(busy)
+            .help("Connect on this network, or choose Over Internet from the menu")
         }
         .padding(.vertical, 4)
     }
 
     private var statusText: String {
-        guard let found else { return "Not found" }
+        guard let found else { return "Not detected on this network" }
         return found.standby ? "Rest mode" : "Ready"
     }
 
@@ -213,9 +230,10 @@ private struct StatusBar: View {
     @EnvironmentObject private var coordinator: StreamCoordinator
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
         HStack(spacing: 16) {
             if let message = activity {
-                ProgressView().controlSize(.small)
+                if coordinator.phase != .streaming { ProgressView().controlSize(.small) }
                 Text(message)
             } else {
                 Label(model.targetDisplayLabel, systemImage: "display")
@@ -226,10 +244,15 @@ private struct StatusBar: View {
             case .connecting:
                 Button("Cancel") { coordinator.stop() }
             case .streaming:
+                Button(coordinator.isRecording ? "Stop Recording" : "Record") { coordinator.toggleRecording() }
                 Button("Leave Stream") { coordinator.stop() }
             case .idle, .stopping:
                 EmptyView()
             }
+        }
+        if let message = coordinator.recordingMessage {
+            Text(message).font(.caption).textSelection(.enabled)
+        }
         }
         .font(.callout)
         .foregroundStyle(.secondary)

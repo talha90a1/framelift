@@ -40,11 +40,20 @@ import Testing
             }
             sem.wait()
             let guarded = try #require(guardBox.value)
+            let regions = try SubtitleDetector.detect(in: pair[1])
+            let textBox = Box()
+            blender.keepSubtitles(previous: pair[0], current: pair[1], generated: plain, regions: regions) { out in
+                textBox.value = out; sem.signal()
+            }
+            sem.wait()
+            let text = try #require(textBox.value)
+            print("subtitle frame \(k): detected \(regions)")
             let name = String(format: "%05d", k)
             try Self.png(pair[0], "\(out)/\(name)-a-real.png")
             try Self.png(plain, "\(out)/\(name)-b-plain.png")
             try Self.png(guarded, "\(out)/\(name)-c-guard.png")
             try Self.png(pair[1], "\(out)/\(name)-d-real.png")
+            try Self.png(text, "\(out)/\(name)-e-subtitles.png")
         }
     }
 

@@ -12,6 +12,7 @@ final class AppModel: ObservableObject {
         didSet {
             guard settings != oldValue else { return }
             store.save(settings)
+            profiles.save(settings, for: activeProfile)
             coordinator.applyLive(settings)
         }
     }
@@ -21,17 +22,27 @@ final class AppModel: ObservableObject {
     /// Wake / wait-for-boot progress shown in the console list.
     @Published private(set) var busyMessage: String?
     @Published var errorAlert: StreamCoordinator.EndAlert?
+    @Published private(set) var profileSelection: ConnectionProfile
+    @Published private(set) var activeProfile: ConnectionProfile = .wifi
 
     let consoles = ConsoleStore.shared
     let input = InputManager()
     let updates = Updater()
+    let psn = PSNAccountStore()
     let coordinator: StreamCoordinator
     private let store = SettingsStore()
+    private let profiles = ConnectionProfiles()
     private var screenObserver: NSObjectProtocol?
     private var coordinatorChanges: AnyCancellable?
 
     private init() {
-        settings = store.load()
+        let previous = store.load()
+        profiles.preservePreviousSettings(previous)
+        let selection = profiles.selection
+        profileSelection = selection
+        let profile = selection == .automatic ? ConnectionProfile.wifi : selection
+        activeProfile = profile
+        settings = profiles.load(profile, preserving: previous)
         coordinator = StreamCoordinator(input: input)
         coordinator.onOverlayToggled = { [weak self] visible in self?.settings.showOverlay = visible }
         coordinator.onEnded = { [weak self] alert in
@@ -119,6 +130,63 @@ final class AppModel: ObservableObject {
         displays = DisplayCatalog.displays()
     }
 
+    func selectProfile(_ selection: ConnectionProfile) {
+        profiles.save(settings, for: activeProfile)
+        profileSelection = selection
+        profiles.selection = selection
+        activeProfile = selection == .automatic ? recommendedProfile : selection
+        settings = profiles.load(activeProfile, preserving: settings)
+    }
+
+    var recommendedProfile: ConnectionProfile {
+        guard let console = consoles.consoles.first else { return .wifi }
+        let host = match(console)?.address ?? console.host
+        return .detected(consoleLink: SystemReport.consoleLink(host: host))
+    }
+
+    func restoreProfileDefaults() { settings = activeProfile.defaults(preserving: settings) }
+
+    func useLastSettings(_ console: PairedConsole) {
+        guard let saved = console.lastSettings else { return }
+        selectProfile(.custom)
+        settings = SettingsStore.sanitized(saved)
+    }
+
+    func connectOverInternet(_ console: PairedConsole, deviceID: String) {
+        guard !coordinator.isActive else { return }
+        guard let credentials = consoles.credentials(for: console.id) else { return reportMissingCredentials(console) }
+        guard let uid = Self.deviceID(deviceID) else {
+            errorAlert = .init(title: "Choose a PS5", message: "Refresh the console list and choose your PS5 again.")
+            return
+        }
+        var saved = console
+        saved.lastSettings = settings
+        saved.psnDeviceID = deviceID
+        consoles.update(saved)
+        if profileSelection == .automatic {
+            profiles.save(settings, for: activeProfile)
+            activeProfile = .internet
+            settings = profiles.load(.internet, preserving: settings)
+        }
+        let account = psn
+        coordinator.start(.console(saved, credentials), settings: effectiveSettings) {
+            InternetConnection(accessToken: try await account.accessToken(for: credentials.accountID), deviceID: uid)
+        }
+    }
+
+    static func deviceID(_ hex: String) -> Data? {
+        guard hex.count == 64, hex.allSatisfy({ $0.isHexDigit && $0.isASCII }) else { return nil }
+        var bytes = Data()
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+            bytes.append(byte)
+            index = next
+        }
+        return bytes
+    }
+
     /// Name of the display the stream will use, for the console list footer.
     var targetDisplayLabel: String {
         if let id = effectiveSettings.targetDisplayID, let display = displays.first(where: { $0.id == id }) { return display.label }
@@ -174,6 +242,14 @@ final class AppModel: ObservableObject {
     func connect(_ console: PairedConsole) async {
         guard !coordinator.isActive else { return }
         guard let credentials = consoles.credentials(for: console.id) else { return reportMissingCredentials(console) }
+        if profileSelection == .automatic {
+            let detected = ConnectionProfile.detected(consoleLink: SystemReport.consoleLink(host: console.host))
+            if detected != activeProfile {
+                profiles.save(settings, for: activeProfile)
+                activeProfile = detected
+                settings = profiles.load(detected, preserving: settings)
+            }
+        }
 
         // A console in rest mode has to boot before it accepts a session.
         if match(console)?.standby == true {

@@ -34,6 +34,7 @@ typedef enum VREventType {
     VR_EVENT_FAILED = 4,        // code = negative Veyra/bridge error or chiaki error
     VR_EVENT_RUMBLE = 5,        // a = left (0-255), b = right (0-255)
     VR_EVENT_MOTION_RESET = 6,
+    VR_EVENT_CONNECTION_PROGRESS = 7,
 } VREventType;
 
 // Called on core worker threads (never the main thread). Must not call back into vr_session_* stop/destroy.
@@ -49,6 +50,8 @@ typedef struct VRCallbacks {
     void (*triggers)(void *user, uint8_t type_left, const uint8_t left[10], uint8_t type_right, const uint8_t right[10]);
     // DualSense haptics: stereo S16 PCM @ 3 kHz.
     void (*haptics)(void *user, const int16_t *pcm, size_t frames);
+    void (*audio_timed)(void *user, const int16_t *pcm, size_t frames, uint32_t channels, uint32_t rate,
+                        uint64_t first_sample, uint64_t arrival_host_time, bool discontinuity);
 } VRCallbacks;
 
 // Semantic buttons (same bit layout as Veyra ControllerState::Button).
@@ -88,6 +91,16 @@ int32_t vr_init(void);
 // Starts a session; host is IPv4 or hostname. Returns NULL on immediate failure (*error_out set).
 VRSession *vr_session_start(const char *host, const VRCredentials *credentials, const VRVideoProfile *profile,
                             const VRCallbacks *callbacks, int32_t *error_out);
+// Internet setup runs asynchronously; connection progress and failure use the callbacks.
+VRSession *vr_session_start_psn(const char *access_token, const uint8_t console_uid[32],
+                              const VRCredentials *credentials, const VRVideoProfile *profile,
+                              const VRCallbacks *callbacks, int32_t *error_out);
+typedef struct VRPSNDevice {
+    uint8_t uid[32];
+    char name[64];
+    bool remote_play_enabled;
+} VRPSNDevice;
+int32_t vr_psn_list_devices(const char *access_token, VRPSNDevice *devices, int32_t max);
 // Stops, joins and frees. Safe to call once from any non-callback thread.
 void vr_session_stop(VRSession *session);
 int32_t vr_session_request_idr(VRSession *session);

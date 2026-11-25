@@ -70,6 +70,9 @@ struct StreamSettings: Codable, Equatable, Sendable {
     var showOverlay: Bool = false
     /// Sampled at stream start.
     var keepLLFIWarm: Bool = true
+    var frameGeneration: Bool = true
+    var protectSubtitles: Bool = true
+    var audioOffsetMs: Double = 0
     /// Copy pixels that don't move between the real frames (subtitles, HUD) into the generated frame.
     var keepStaticOverlays: Bool = false
     /// 50/50 blend shown when Apple's frame misses its deadline; off repeats the real frame instead.
@@ -80,6 +83,7 @@ struct StreamSettings: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case width, height, streamFPS, bitrateKbps, codec, targetDisplayID, fullscreen, sceneCutFallback
         case showOverlay, keepLLFIWarm, keepStaticOverlays, blendFallback, sharpness, upscaler
+        case frameGeneration, protectSubtitles, audioOffsetMs
     }
 }
 
@@ -98,6 +102,9 @@ extension StreamSettings {
         sceneCutFallback = try c.decodeIfPresent(Bool.self, forKey: .sceneCutFallback) ?? sceneCutFallback
         showOverlay = try c.decodeIfPresent(Bool.self, forKey: .showOverlay) ?? showOverlay
         keepLLFIWarm = try c.decodeIfPresent(Bool.self, forKey: .keepLLFIWarm) ?? keepLLFIWarm
+        frameGeneration = try c.decodeIfPresent(Bool.self, forKey: .frameGeneration) ?? frameGeneration
+        protectSubtitles = try c.decodeIfPresent(Bool.self, forKey: .protectSubtitles) ?? protectSubtitles
+        audioOffsetMs = try c.decodeIfPresent(Double.self, forKey: .audioOffsetMs) ?? audioOffsetMs
         keepStaticOverlays = try c.decodeIfPresent(Bool.self, forKey: .keepStaticOverlays) ?? keepStaticOverlays
         blendFallback = try c.decodeIfPresent(Bool.self, forKey: .blendFallback) ?? blendFallback
         sharpness = try c.decodeIfPresent(Double.self, forKey: .sharpness) ?? sharpness
@@ -122,6 +129,9 @@ struct PCMChunk: Sendable {
     var samples: [Int16]
     var channels: UInt32
     var sampleRate: UInt32
+    var firstSample: UInt64 = 0
+    var arrivalHostTime: UInt64 = 0
+    var discontinuity: Bool = false
 }
 
 struct DecodedFrame: @unchecked Sendable {

@@ -41,7 +41,11 @@ final class StreamCoordinator: ObservableObject {
 
     private var target: StreamTarget?
     private var settings = StreamSettings()
+    private var internetProvider: (() async throws -> InternetConnection)?
     private var recorder: StreamRecorder?
+    private let recordingOutput = RecordingOutput()
+    @Published private(set) var isRecording = false
+    @Published private(set) var recordingMessage: String?
     private var traceActive = false
     /// "Debug logs", sampled when the stream starts: trace files, core INFO lines, latency probes.
     private(set) var debugLogs = false
@@ -61,6 +65,8 @@ final class StreamCoordinator: ObservableObject {
     private var generation = 0
     private var retriesLeft = SessionRetryPolicy.maxRetries
     private var retryResetWork: DispatchWorkItem?
+    private var connectionTimeout: Task<Void, Never>?
+    private var recordingGeneration = 0
     private var firstFrameTimeout: Task<Void, Never>?
     private var attemptConnected = false
     private var attemptHasVideo = false
@@ -78,10 +84,11 @@ final class StreamCoordinator: ObservableObject {
 
     // MARK: Start / stop
 
-    func start(_ target: StreamTarget, settings: StreamSettings) {
+    func start(_ target: StreamTarget, settings: StreamSettings, internetProvider: (() async throws -> InternetConnection)? = nil) {
         guard phase == .idle else { return }
         self.target = target
         self.settings = settings
+        self.internetProvider = internetProvider
         debugLogs = DebugLogs.stored()
         retriesLeft = SessionRetryPolicy.maxRetries
         phase = .connecting("Connecting to \(target.title)…")
@@ -99,9 +106,19 @@ final class StreamCoordinator: ObservableObject {
         self.window = window
         let engine = PresentationEngine(view: window.presenterView, settings: settings)
         self.engine = engine
+        let recording = recordingOutput
+        engine.onFramePresented = { buffer, tags, time in recording.video(buffer, tags: tags, at: time) }
+        recording.onError = { [weak self] message in
+            Self.onMain {
+                self?.recordingMessage = message
+                self?.stopRecording()
+            }
+        }
         engine.showFPSCounter = settings.showOverlay
 
         let audio = AudioOutput()
+        audio.setOffset(milliseconds: settings.audioOffsetMs)
+        engine.onVideoPresented = { [weak audio] arrival, presented in audio?.noteVideoPresentation(arrival: arrival, presented: presented) }
         audio.start()
         self.audio = audio
 
@@ -133,6 +150,10 @@ final class StreamCoordinator: ObservableObject {
         settings.sceneCutFallback = newSettings.sceneCutFallback
         settings.showOverlay = newSettings.showOverlay
         settings.keepStaticOverlays = newSettings.keepStaticOverlays
+        settings.frameGeneration = newSettings.frameGeneration
+        settings.protectSubtitles = newSettings.protectSubtitles
+        settings.audioOffsetMs = newSettings.audioOffsetMs
+        audio?.setOffset(milliseconds: newSettings.audioOffsetMs)
         settings.blendFallback = newSettings.blendFallback
         settings.sharpness = newSettings.sharpness
         settings.upscaler = newSettings.upscaler
@@ -147,13 +168,35 @@ final class StreamCoordinator: ObservableObject {
     // MARK: Pipeline
 
     private func startSource() {
+        audio?.resetSync()
         guard case .console(let console, let credentials) = target, let engine else { return }
         generation += 1
         let generation = generation
         attemptConnected = false
         attemptHasVideo = false
+        videoBytes.reset()
 
-        let session = RemotePlaySession(host: console.host, credentials: credentials, settings: settings)
+        connectionTimeout?.cancel()
+        connectionTimeout = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(self?.internetProvider == nil ? 30 : 90)) } catch { return }
+            guard let self, generation == self.generation, case .connecting = self.phase else { return }
+            self.teardown(alert: EndAlert(title: "Connection timed out", message: "The PS5 did not finish connecting. Check that it is online and Remote Play is enabled."), completion: nil)
+        }
+        Task { [weak self] in
+            do {
+                let internet = try await self?.internetProvider?()
+                guard let self, generation == self.generation, self.isActive, self.phase != .stopping else { return }
+                self.startResolvedSource(console, credentials: credentials, engine: engine, internet: internet, generation: generation)
+            } catch {
+                guard let self, generation == self.generation else { return }
+                self.teardown(alert: EndAlert(title: "Couldn't connect", message: error.localizedDescription), completion: nil)
+            }
+        }
+    }
+
+    private func startResolvedSource(_ console: PairedConsole, credentials: ConsoleCredentials, engine: PresentationEngine,
+                                     internet: InternetConnection?, generation: Int) {
+        let session = RemotePlaySession(host: console.host, credentials: credentials, settings: settings, internet: internet)
         session.onEvent = { [weak self] event in
             Self.onMain { self?.handle(event, generation: generation) }
         }
@@ -192,7 +235,11 @@ final class StreamCoordinator: ObservableObject {
             decoder.decode(unit)
         }
         let audio = audio
-        session.onAudio = { chunk in audio?.enqueue(chunk) }
+        let recording = recordingOutput
+        session.onAudio = { chunk in
+            audio?.enqueue(chunk)
+            recording.audio(chunk, delayMs: audio?.presentationDelayMs ?? 40)
+        }
         source = session
 
         do {
@@ -210,6 +257,13 @@ final class StreamCoordinator: ObservableObject {
         guard generation == self.generation, isActive, phase != .stopping else { return }
         Diagnostics.shared.event("session event \(Self.describe(event))")
         switch event {
+        case .connectionProgress(let stage):
+            let message = switch stage {
+            case 1: "Connecting to PlayStation…"
+            case 2: "Contacting your PS5…"
+            default: "Connecting through your router…"
+            }
+            phase = .connecting(message)
         case .connected:
             guard !attemptConnected else { return }
             attemptConnected = true
@@ -262,6 +316,8 @@ final class StreamCoordinator: ObservableObject {
         guard attemptConnected, attemptHasVideo, let window else { return }
         firstFrameTimeout?.cancel()
         firstFrameTimeout = nil
+        connectionTimeout?.cancel()
+        connectionTimeout = nil
         phase = .streaming
         beginDisplayActivity()
         window.show()
@@ -277,6 +333,8 @@ final class StreamCoordinator: ObservableObject {
         let retry = SessionRetryPolicy.maxRetries - retriesLeft + 1
         retriesLeft -= 1
         retryResetWork?.cancel()
+        connectionTimeout?.cancel()
+        connectionTimeout = nil
         firstFrameTimeout?.cancel()
         firstFrameTimeout = nil
         let wait = SessionRetryPolicy.wait(consoleHoldsSession: consoleHoldsSession, wasPlaying: attemptConnected)
@@ -317,6 +375,7 @@ final class StreamCoordinator: ObservableObject {
     }
 
     private func teardown(alert: EndAlert?, completion: (() -> Void)?) {
+        stopRecording()
         guard isActive, phase != .stopping else {
             completion?()
             return
@@ -325,6 +384,8 @@ final class StreamCoordinator: ObservableObject {
         generation += 1
         lastStreamEnd = HostClock.now()
         retryResetWork?.cancel()
+        connectionTimeout?.cancel()
+        connectionTimeout = nil
         firstFrameTimeout?.cancel()
         firstFrameTimeout = nil
         input.sink = nil
@@ -358,6 +419,7 @@ final class StreamCoordinator: ObservableObject {
                 self.endTrace()
                 self.engine = nil
                 self.target = nil
+                self.internetProvider = nil
                 self.phase = .idle
                 self.onEnded?(alert)
             }
@@ -417,6 +479,11 @@ final class StreamCoordinator: ObservableObject {
         let kbps = Double(videoBytes.take()) * 8 / 1000 / elapsed
         Telemetry.shared.update { $0.bitrateKbps = kbps }
         guard let session = source else { return }
+        if attemptConnected, StreamHealth.videoTimedOut(lastArrival: videoBytes.lastArrival, now: now) {
+            sessionEnded(transient: true, alert: EndAlert(title: "Connection lost", message: "No video has arrived from the PS5 for five seconds. Reconnect after checking the console and network."), generation: generation)
+            return
+        }
+        if debugLogs { Diagnostics.shared.event(audio?.diagnostics ?? "audio output unavailable") }
         let stats = session.stats
         Telemetry.shared.update { $0.packetsLost = stats.packets_lost }
         noteLoss(received: stats.packets_received, lost: stats.packets_lost, now: now)
@@ -444,6 +511,7 @@ final class StreamCoordinator: ObservableObject {
 
     private static func describe(_ event: SessionEvent) -> String {
         switch event {
+        case .connectionProgress(let stage): "connection progress \(stage)"
         case .connected: "connected"
         case .loginPinRequired: "login PIN required"
         case .quit(let reason, let message): "quit reason=\(reason) \(message)"
@@ -520,6 +588,49 @@ extension StreamCoordinator: StreamWindowDelegate {
         latencyProbe.toggle()
     }
 
+    func toggleRecording() {
+        if isRecording { stopRecording(); return }
+        guard phase == .streaming else { return }
+        recordingGeneration += 1
+        let name = Self.mediaName() + ".mp4"
+        recordingOutput.start(url: VideoRecording.root.appendingPathComponent(name))
+        isRecording = true
+        recordingMessage = nil
+    }
+
+    private func stopRecording() {
+        guard isRecording else { return }
+        isRecording = false
+        let generation = recordingGeneration
+        recordingOutput.stop { [weak self] result in
+            Self.onMain {
+                guard let self, generation == self.recordingGeneration else { return }
+                switch result {
+                case .success(let url): self.recordingMessage = "Saved \(url.lastPathComponent)"
+                case .failure(let error): self.recordingMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func saveScreenshot() {
+        guard phase == .streaming else { return }
+        let url = VideoRecording.root.appendingPathComponent(Self.mediaName() + ".png")
+        let output = recordingOutput
+        Task {
+            let result = await BridgeInterop.run { Result { try output.screenshot(to: url) } }
+            switch result {
+            case .success: recordingMessage = "Saved \(url.lastPathComponent)"
+            case .failure(let error): recordingMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private static func mediaName() -> String {
+        let date = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        return date + "-" + UUID().uuidString.prefix(6)
+    }
+
 }
 
 private struct UncheckedSendable<Value>: @unchecked Sendable {
@@ -531,9 +642,14 @@ private struct UncheckedSendable<Value>: @unchecked Sendable {
 private final class ByteCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var bytes = 0
+    private var arrival: UInt64 = 0
+
+    var lastArrival: UInt64 { lock.withLock { arrival } }
+
+    func reset() { lock.withLock { bytes = 0; arrival = HostClock.now() } }
 
     func add(_ count: Int) {
-        lock.lock(); bytes += count; lock.unlock()
+        lock.lock(); bytes += count; arrival = HostClock.now(); lock.unlock()
     }
 
     func take() -> Int {
@@ -541,5 +657,11 @@ private final class ByteCounter: @unchecked Sendable {
         let value = bytes
         bytes = 0
         return value
+    }
+}
+
+enum StreamHealth {
+    static func videoTimedOut(lastArrival: UInt64, now: UInt64) -> Bool {
+        lastArrival > 0 && now >= lastArrival && HostClock.seconds(now - lastArrival) >= 5
     }
 }

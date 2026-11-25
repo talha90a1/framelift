@@ -9,6 +9,9 @@ import QuartzCore
 import os
 
 final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable {
+    var onVideoPresented: ((Double, Double) -> Void)?
+    var onFramePresented: ((CVPixelBuffer, ColourTags, Double) -> Void)?
+    private let subtitles = SubtitleDetector()
     // MARK: Public knobs (not in the frozen StreamSettings; wire from the app)
 
     /// In-frame FPS/latency HUD (drawn in the Metal pass).
@@ -134,6 +137,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     }
 
     func reset() {
+        subtitles.reset()
         perform {
             self.epoch += 1
             self.records.removeAll()
@@ -165,6 +169,10 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     }
 
     private func displayAllowsGeneration() -> Bool {
+        if !settings.frameGeneration {
+            setGate("real frames (frame generation off)")
+            return false
+        }
         if effectiveFPS >= 50 {
             setGate("real frames (noGeneration60: 60 fps source)")
             return false
@@ -219,6 +227,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     // MARK: Frame intake (render thread)
 
     private func receive(_ frame: DecodedFrame) {
+        if frame.discontinuity { subtitles.reset() }
         if settings.streamFPS >= 50 {
             if frame.discontinuity { resetFrameCadence() }
             let thumb = LumaThumbnail(frame.pixelBuffer)
@@ -306,6 +315,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
                     let cut = r?.isCut ?? false
                     self.records[id]?.cut = cut
                     if cut {
+                        self.subtitles.reset()
                         Diagnostics.shared.event(String(format: "render: scene cut seq %llu (sad %.3f hist %.3f)", seq, r?.sad ?? 0, r?.histogramDistance ?? 0))
                         self.pacer.midFinished(id: id, ok: false)
                         self.resolveIfWaiting(id)
@@ -337,16 +347,22 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
                 } else if let e = r.error {
                     Diagnostics.shared.event("render: \(interpolator.backendName) failed seq \(seq): \(e)")
                 }
-                guard r.frames.count == 1, self.settings.keepStaticOverlays, let blender = self.blender else {
+                guard r.frames.count == 1, self.settings.keepStaticOverlays || self.settings.protectSubtitles, let blender = self.blender else {
                     self.midArrived(id: id, buffers: r.frames, source: .appleML)
                     return
                 }
                 let mid = r.frames[0]
-                blender.keepStatic(previous: previous, current: current, generated: mid) { [weak self] out in
+                let completion: (CVPixelBuffer?) -> Void = { [weak self] out in
                     self?.perform {
                         guard let self, ep == self.epoch else { return }
                         self.midArrived(id: id, buffers: [out ?? mid], source: .appleML)
                     }
+                }
+                if self.settings.keepStaticOverlays {
+                    blender.keepStatic(previous: previous, current: current, generated: mid, completion: completion)
+                } else {
+                    blender.keepSubtitles(previous: previous, current: current, generated: mid,
+                        regions: self.subtitles.regions(for: current, at: CACurrentMediaTime()), completion: completion)
                 }
             }
         }
@@ -497,6 +513,8 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             stats.notePresented(at: presented, generated: generated, arrival: arrival)
             // Glass time vs target lets the pacer see a backed-up present queue.
             if presented > 0 {
+                self?.onFramePresented?(buffer, frame.colourTags, presented)
+                if !generated { self?.onVideoPresented?(arrival, presented) }
                 self?.perform {
                     guard let self else { return }
                     self.pacer.notePresented(target: target, presented: presented)

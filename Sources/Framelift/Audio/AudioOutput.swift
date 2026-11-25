@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Low-latency playback of the PS5's PCM (interleaved S16, 48 kHz stereo, 10 ms chunks) through an
 // SPSC ring and an AVAudioSourceNode on the default output device.
-// Latency policy (render thread): prefill `prefillMs` after start/underrun, drop down to `targetMs`
-// above `maxMs`, and trim drift when the buffer stayed above `targetMs + trimSlackMs` for 1 s.
+// Playback follows measured video delay, with gradual resampling for clock drift.
 // AVAudioEngine binds to the default device when built, so device changes rebuild the engine.
 import AVFoundation
 import CoreAudio
@@ -12,10 +11,7 @@ import Synchronization
 final class AudioOutput: @unchecked Sendable {
     // MARK: Tunables
 
-    static let targetMs: Double = 40
-    static let prefillMs: Double = 30
     static let maxMs: Double = 100
-    static let trimSlackMs: Double = 20
     /// Requested hardware IO buffer (frames at the device rate). Smaller = lower latency, more CPU wakeups.
     static let ioBufferFrames: UInt32 = 256
 
@@ -25,6 +21,11 @@ final class AudioOutput: @unchecked Sendable {
     private let queue = DispatchQueue(label: "framelift.audio.engine", qos: .userInteractive)
     private let wantRunning = Atomic<Bool>(false)
     private let restartGeneration = Atomic<UInt64>(0)
+    private let syncLock = NSLock()
+    private var sync = AudioSync()
+    private var offsetMs: Double = 0
+    private var outputLatencyMs: Double = 0
+    private var lastUnderruns = 0
 
     // Owned by `queue`.
     private var engine: AVAudioEngine?
@@ -59,6 +60,7 @@ final class AudioOutput: @unchecked Sendable {
     func enqueue(_ chunk: PCMChunk) {
         let channels = Int(chunk.channels)
         guard channels > 0, chunk.sampleRate > 0, !chunk.samples.isEmpty else { return }
+        if chunk.discontinuity { resetSync() }
         let current = ring.sampleRate.load(ordering: .relaxed)
         if chunk.sampleRate != current {
             // Stream format changed: rebuild the graph at the new rate; audio until then is discarded.
@@ -74,6 +76,45 @@ final class AudioOutput: @unchecked Sendable {
         chunk.samples.withUnsafeBufferPointer { ring.write(interleavedS16: $0, channels: channels) }
     }
 
+    func setOffset(milliseconds: Double) {
+        syncLock.withLock { offsetMs = milliseconds }
+    }
+
+    var presentationDelayMs: Double {
+        syncLock.withLock { sync.targetMs + outputLatencyMs }
+    }
+
+    func noteVideoPresentation(arrival: Double, presented: Double) {
+        guard arrival > 0, presented > arrival else { return }
+        syncLock.withLock {
+            let underruns = ring.underruns.load(ordering: .relaxed)
+            if underruns > lastUnderruns { sync.noteUnderrun(); lastUnderruns = underruns }
+            sync.observe(videoDelayMs: (presented - arrival) * 1000,
+                         outputLatencyMs: outputLatencyMs, offsetMs: offsetMs)
+            if sync.settled {
+                ring.targetFrames.store(Int(Double(ring.sampleRate.load(ordering: .relaxed)) * sync.targetMs / 1000), ordering: .relaxed)
+                ring.syncReady.store(true, ordering: .releasing)
+            }
+        }
+    }
+
+    func resetSync() {
+        syncLock.withLock {
+            sync = AudioSync()
+            lastUnderruns = ring.underruns.load(ordering: .relaxed)
+        }
+        ring.targetFrames.store(1920, ordering: .relaxed)
+        ring.flushRequested.store(true, ordering: .releasing)
+        ring.syncReady.store(false, ordering: .relaxed)
+        ring.firstAudioTime.store(0, ordering: .relaxed)
+    }
+
+    var diagnostics: String {
+        let target = syncLock.withLock { sync.targetMs }
+        return String(format: "audio playback target=%.1fms underruns=%d overflows=%d", target,
+                      ring.underruns.load(ordering: .relaxed), ring.overflows.load(ordering: .relaxed))
+    }
+
     // MARK: Engine lifecycle (on `queue`)
 
     private func buildAndStartLocked() {
@@ -84,22 +125,22 @@ final class AudioOutput: @unchecked Sendable {
         guard let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2) else { return }
         let engine = AVAudioEngine()
         let ring = self.ring
-        let prefill = Int(rate * Self.prefillMs / 1000)
-        let target = Int(rate * Self.targetMs / 1000)
-        let maxFrames = Int(rate * Self.maxMs / 1000)
-        let trimSlack = Int(rate * Self.trimSlackMs / 1000)
-        let window = Int(rate) // 1 s drift observation window
         let node = AVAudioSourceNode(format: format) { isSilence, _, frameCount, abl in
+            let target = ring.targetFrames.load(ordering: .relaxed)
+            let first = ring.firstAudioTime.load(ordering: .relaxed)
+            let waiting = !ring.syncReady.load(ordering: .acquiring)
+                && (first == 0 || HostClock.seconds(HostClock.now() - first) < 2)
             ring.render(into: UnsafeMutableAudioBufferListPointer(abl),
                         frames: Int(frameCount),
                         isSilence: isSilence,
-                        prefill: prefill, target: target, maxFrames: maxFrames,
-                        trimSlack: trimSlack, window: window)
+                        prefill: target, target: target, maxFrames: max(Int(rate * Self.maxMs / 1000), target + Int(rate * 0.08)),
+                        waitingForVideo: waiting)
             return noErr
         }
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
         Self.requestIOBuffer(engine.outputNode, frames: Self.ioBufferFrames)
+        syncLock.withLock { outputLatencyMs = engine.outputNode.presentationLatency * 1000 }
 
         configObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
@@ -114,6 +155,7 @@ final class AudioOutput: @unchecked Sendable {
         self.sourceNode = node
         do {
             try engine.start()
+            syncLock.withLock { outputLatencyMs = engine.outputNode.presentationLatency * 1000 }
         } catch {
             NSLog("[AudioOutput] engine start failed: \(error); retrying in 500 ms")
             scheduleRestart(reason: "start failure", delay: 0.5)
@@ -189,11 +231,19 @@ final class AudioRing: @unchecked Sendable {
     let readIndex = Atomic<UInt64>(0)
     let sampleRate = Atomic<UInt32>(48000)
     let pendingRate = Atomic<UInt32>(48000)
+    let underruns = Atomic<Int>(0)
+    let overflows = Atomic<Int>(0)
+    let flushRequested = Atomic<Bool>(false)
+    let targetFrames = Atomic<Int>(1920)
+    let syncReady = Atomic<Bool>(false)
+    let firstAudioTime = Atomic<UInt64>(0)
 
     // Consumer-only state (render thread, or the engine queue while the render thread is stopped).
     private var priming = true
-    private var windowMin = Int.max
-    private var windowFrames = 0
+    private var fraction: Double = 0
+    private var previousLeft: Float = 0
+    private var previousRight: Float = 0
+    private var fadeRemaining = 0
 
     init(capacityFrames: Int) {
         precondition(capacityFrames > 0 && capacityFrames & (capacityFrames - 1) == 0)
@@ -209,6 +259,7 @@ final class AudioRing: @unchecked Sendable {
     func write(interleavedS16 src: UnsafeBufferPointer<Int16>, channels: Int) {
         let frames = src.count / channels
         guard frames > 0 else { return }
+        if firstAudioTime.load(ordering: .relaxed) == 0 { firstAudioTime.store(HostClock.now(), ordering: .relaxed) }
         let w = writeIndex.load(ordering: .relaxed)
         let r = readIndex.load(ordering: .acquiring)
         let free = capacity - Int(w - r)
@@ -231,16 +282,26 @@ final class AudioRing: @unchecked Sendable {
         let w = writeIndex.load(ordering: .acquiring)
         readIndex.store(w, ordering: .releasing)
         priming = true
-        windowMin = .max
-        windowFrames = 0
+        fraction = 0
+        previousLeft = 0
+        previousRight = 0
+        fadeRemaining = 64
     }
 
     /// Consumer side (real-time thread).
     func render(into abl: UnsafeMutableAudioBufferListPointer, frames: Int,
                 isSilence: UnsafeMutablePointer<ObjCBool>,
-                prefill: Int, target: Int, maxFrames: Int, trimSlack: Int, window: Int) {
+                prefill: Int, target: Int, maxFrames: Int,
+                waitingForVideo: Bool = false) {
         guard abl.count >= 1, let left = abl[0].mData?.assumingMemoryBound(to: Float.self) else { return }
         let right = abl.count >= 2 ? abl[1].mData?.assumingMemoryBound(to: Float.self) : nil
+        if flushRequested.exchange(false, ordering: .acquiringAndReleasing) { flushForStart() }
+        isSilence.pointee = false
+        if waitingForVideo {
+            fillSilence(left, right, from: 0, to: frames)
+            isSilence.pointee = true
+            return
+        }
 
         let w = writeIndex.load(ordering: .acquiring)
         var r = readIndex.load(ordering: .relaxed)
@@ -249,13 +310,12 @@ final class AudioRing: @unchecked Sendable {
         if priming {
             if available >= prefill {
                 priming = false
+                fadeRemaining = 64
                 if available > target { // start right at the target latency
                     let drop = available - target
                     r &+= UInt64(drop)
                     available = target
                 }
-                windowMin = .max
-                windowFrames = 0
             } else {
                 fillSilence(left, right, from: 0, to: frames)
                 isSilence.pointee = true
@@ -264,37 +324,51 @@ final class AudioRing: @unchecked Sendable {
         }
 
         if available > maxFrames {
+            overflows.add(1, ordering: .relaxed)
             let drop = available - target
             r &+= UInt64(drop)
             available = target
-            windowMin = .max
-            windowFrames = 0
-        } else {
-            windowMin = min(windowMin, available)
-            windowFrames += frames
-            if windowFrames >= window {
-                if windowMin != .max, windowMin > target + trimSlack {
-                    let drop = windowMin - target
-                    r &+= UInt64(drop)
-                    available -= drop
-                }
-                windowMin = .max
-                windowFrames = 0
-            }
+            fraction = 0
+            fadeRemaining = 64
         }
 
-        let n = min(available, frames)
-        var pos = Int(r & UInt64(mask))
-        for i in 0..<n {
-            left[i] = storage[pos * 2]
-            right?[i] = storage[pos * 2 + 1]
-            pos = (pos + 1) & mask
+        let step = AudioSync.driftStep(available: available, target: target, rate: Double(sampleRate.load(ordering: .relaxed)))
+        var consumed = 0
+        var n = 0
+        while n < frames, consumed + 1 < available {
+            let at = Int((r + UInt64(consumed)) & UInt64(mask))
+            let next = (at + 1) & mask
+            let weight = Float(fraction)
+            var l = storage[at * 2] * (1 - weight) + storage[next * 2] * weight
+            var rr = storage[at * 2 + 1] * (1 - weight) + storage[next * 2 + 1] * weight
+            if fadeRemaining > 0 {
+                let gain = 1 / Float(fadeRemaining)
+                l = previousLeft + (l - previousLeft) * gain
+                rr = previousRight + (rr - previousRight) * gain
+                fadeRemaining -= 1
+            }
+            left[n] = l
+            right?[n] = rr
+            previousLeft = l; previousRight = rr
+            fraction += step
+            let advance = Int(fraction)
+            fraction -= Double(advance)
+            consumed += advance
+            n += 1
         }
         if n < frames {
-            fillSilence(left, right, from: n, to: frames)
+            underruns.add(1, ordering: .relaxed)
+            for i in n..<frames {
+                let gain = max(0, 1 - Float(i - n + 1) / 64)
+                left[i] = previousLeft * gain
+                right?[i] = previousRight * gain
+            }
+            previousLeft = 0
+            previousRight = 0
             priming = true
+            fraction = 0
         }
-        readIndex.store(r &+ UInt64(n), ordering: .releasing)
+        readIndex.store(r &+ UInt64(min(consumed, available)), ordering: .releasing)
     }
 
     @inline(__always)

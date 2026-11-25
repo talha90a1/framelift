@@ -265,6 +265,7 @@ BackendResult ChiakiBackend::start(const NativeConnectRequest& request,SessionIn
     // Framelift: INFO is always on (rare lines, needed for FEC/IDR counters); VERBOSE/DEBUG on opt-in.
     chiaki_log_init(&s.log,CHIAKI_LOG_WARNING|CHIAKI_LOG_ERROR|CHIAKI_LOG_INFO|chiakiLogExtraLevels(),Impl::logCallback,&s);
     ChiakiConnectInfo info{};info.ps5=true;info.host=s.host.c_str();
+    info.holepunch_session = static_cast<ChiakiHolepunchSession>(request.internetSession);
     info.disable_takion_v20=takionV20Disabled(s.host);
     std::memcpy(info.regist_key,request.credentials.registrationKey.data(),request.credentials.registrationKey.size());
     std::memcpy(info.morning,request.credentials.sessionKey.data(),request.credentials.sessionKey.size());
