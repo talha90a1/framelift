@@ -107,7 +107,7 @@ final class StreamCoordinator: ObservableObject {
             loginParent: NSApp.keyWindow ?? NSApp.mainWindow)
         window.delegate = self
         self.window = window
-        let engine = PresentationEngine(view: window.presenterView, settings: settings)
+        let engine = PresentationEngine(view: window.presenterView, settings: settings, internet: internetProvider != nil)
         self.engine = engine
         let recording = recordingOutput
         engine.onFramePresented = { buffer, tags, time in recording.video(buffer, tags: tags, at: time) }

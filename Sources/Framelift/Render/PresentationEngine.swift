@@ -33,6 +33,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     private let modeLock = NSLock()
     private var _showFPS = false
     private var settings: StreamSettings
+    private let internet: Bool
     private let ctx: RenderContext?
     /// Apple ML interpolation (VTFrameProcessor low-latency frame interpolation). Until its model
     /// is ready, real frames are shown on display cadence.
@@ -90,10 +91,11 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     private var interpSamples = 0
     private var lastTelemetryPush: Double = 0
 
-    init(view: MetalPresenterView, settings: StreamSettings, telemetry: Telemetry = .shared, renderTelemetry: RenderTelemetry = .shared) {
+    init(view: MetalPresenterView, settings: StreamSettings, internet: Bool = false, telemetry: Telemetry = .shared, renderTelemetry: RenderTelemetry = .shared) {
         self.view = view
         self.thread = view.renderThread
         self.settings = settings
+        self.internet = internet
         self.telemetry = telemetry
         self.renderTelemetry = renderTelemetry
         ctx = try? RenderContext.shared()
@@ -110,7 +112,9 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             self.view.sharpness = Float(settings.sharpness)
             self.view.upscaler = settings.upscaler
         }
-        Diagnostics.shared.event("render: frame generation Apple ML interpolation")
+        Diagnostics.shared.event(internet && settings.streamFPS >= 50
+            ? "render: direct frames for 60 fps Internet Play"
+            : "render: frame generation Apple ML interpolation")
     }
 
     private func perform(_ block: @escaping () -> Void) { thread.perform(block) }
@@ -155,17 +159,21 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
 
     private func rebuildBackends() {
         blender = nil
+        llfi = nil
+        interpSamples = 0
+        pacer.reset()
+        if internet && settings.streamFPS >= 50 {
+            setGate("real frames (60 fps Internet Play)")
+            return
+        }
         guard let ctx else { setGate("none (no Metal)"); return }
         blender = try? FrameBlender(context: ctx)
-        llfi = nil
         if AppleLLFIInterpolator.isSupported {
             let l = AppleLLFIInterpolator(keepWarm: settings.keepLLFIWarm)
             l.prepare(width: Int(settings.width), height: Int(settings.height))
             llfi = l
         }
-        interpSamples = 0
         Diagnostics.shared.event("render: backend \(llfi?.backendName ?? "none (Apple ML unavailable)")")
-        pacer.reset()
     }
 
     private func displayAllowsGeneration() -> Bool {
@@ -224,7 +232,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
 
     private func receive(_ frame: DecodedFrame) {
         if frame.discontinuity { subtitles.reset() }
-        if settings.streamFPS >= 50 {
+        if settings.streamFPS >= 50 && !internet {
             if frame.discontinuity { resetFrameCadence() }
             let thumb = LumaThumbnail(frame.pixelBuffer)
             defer { lastThumbnail = thumb }
