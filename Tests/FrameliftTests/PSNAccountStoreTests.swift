@@ -9,6 +9,37 @@ import Testing
                          expiresAt: Date(timeIntervalSinceNow: -1), accountIDBase64: "AAAAAAAAAAA=", onlineID: nil)
     }
 
+    @Test func pairingSignInIsSavedAndReusedAfterRelaunch() async throws {
+        var authorization = expired
+        authorization.expiresAt = Date(timeIntervalSinceNow: 3600)
+        authorization.onlineID = "fixture-player"
+        var saved: PSNAuthorization?
+        let store = PSNAccountStore(authorization: nil, save: { saved = $0 }, clear: {}) { _ in
+            Issue.record("A valid pairing sign-in should not need refreshing")
+            throw CancellationError()
+        }
+        try store.accept(PSNSignIn.Account(accountIDBase64: authorization.accountIDBase64,
+                                         onlineID: authorization.onlineID, authorization: authorization))
+        #expect(store.signedIn && store.onlineID == "fixture-player")
+        #expect(saved == authorization)
+        let restored = PSNAccountStore(authorization: saved, save: { _ in }, clear: {}) { _ in
+            Issue.record("The restored sign-in should still be valid")
+            throw CancellationError()
+        }
+        #expect(restored.signedIn)
+        #expect(try await restored.accessToken(for: Data(base64Encoded: authorization.accountIDBase64)) == authorization.accessToken)
+    }
+
+    @Test func failedSignInSaveDoesNotClaimToBeSignedIn() throws {
+        enum FixtureError: Error { case unavailable }
+        let store = PSNAccountStore(authorization: nil, save: { _ in throw FixtureError.unavailable }, clear: {})
+        #expect(throws: FixtureError.unavailable) {
+            try store.accept(PSNSignIn.Account(accountIDBase64: expired.accountIDBase64,
+                                             onlineID: nil, authorization: expired))
+        }
+        #expect(!store.signedIn)
+    }
+
     @Test func concurrentRequestsShareOneTokenRefresh() async throws {
         let calls = RefreshCalls()
         var saves = 0

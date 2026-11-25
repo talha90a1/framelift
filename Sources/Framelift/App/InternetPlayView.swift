@@ -24,7 +24,11 @@ struct InternetPlaySettings: View {
         .sheet(isPresented: $signingIn) {
             PSNSignInSheet { result in
                 Task {
-                    do { try await account.accept(result); error = nil }
+                    do {
+                        try account.accept(result)
+                        try await account.refreshDevices()
+                        error = nil
+                    }
                     catch { self.error = error.localizedDescription }
                 }
             }

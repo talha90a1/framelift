@@ -86,7 +86,7 @@ struct PSNDevice: Identifiable, Hashable {
         onlineID = authorization?.onlineID
     }
 
-    func accept(_ account: PSNSignIn.Account) async throws {
+    func accept(_ account: PSNSignIn.Account) throws {
         guard let authorization = account.authorization else { throw PSNSignIn.Failure.badResponse }
         try saveAuthorization(authorization)
         refreshTask?.task.cancel()
@@ -96,7 +96,6 @@ struct PSNDevice: Identifiable, Hashable {
         onlineID = authorization.onlineID
         devices = []
         generation += 1
-        try await refreshDevices()
     }
 
     func signOut() throws {

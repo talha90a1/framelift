@@ -90,6 +90,8 @@ struct PairSheet: View {
                 accountID = account.accountIDBase64
                 onlineID = account.onlineID ?? ""
                 model.consoles.psnAccountIDBase64 = account.accountIDBase64
+                do { try model.psn.accept(account); error = nil }
+                catch { self.error = error.localizedDescription }
             }
         }
         .onChange(of: accountID) {
