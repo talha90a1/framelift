@@ -5,6 +5,75 @@ import Testing
 @testable import Framelift
 
 struct SubtitleGuardTests {
+    @Test func characterClothingIsNotACornerMeter() throws {
+        let width = 1920, height = 1080
+        var pixels = [UInt8](repeating: 60, count: width * height)
+        for y in 900..<916 { for x in 506..<640 { pixels[y * width + x] = 150 } }
+        let frame = try buffer(pixels, width: width, height: height)
+        #expect(HUDDetector.detect(previous: frame, current: frame).isEmpty)
+    }
+
+    @Test func subtitleProtectionDoesNotCopyAMovingObjectNextToStableText() throws {
+        let width = 64, height = 32
+        var a = [UInt8](repeating: 45, count: width * height), b = a
+        var generated = [UInt8](repeating: 56, count: width * height)
+        for y in 12..<20 {
+            for x in 24..<28 { a[y * width + x] = 235; b[y * width + x] = 235 }
+            for x in 30..<34 { a[y * width + x] = 20 }
+            for x in 28..<32 { b[y * width + x] = 20 }
+            for x in 29..<33 { generated[y * width + x] = 20 }
+        }
+        let output = try apply(buffer(a), buffer(b), buffer(generated), regions: [SIMD4(0, 0, 1, 1)])
+        let pixels = luma(output)
+        #expect(pixels[15 * width + 28] == generated[15 * width + 28])
+        #expect(pixels[15 * width + 26] == 235)
+    }
+
+    @Test(arguments: [false, true], [1280, 1920])
+    func stableCornerMeterIsRestoredWithoutHoldingItsMovingBackground(tenBit: Bool, width: Int) throws {
+        let height = width * 9 / 16
+        var a = [UInt8](repeating: 45, count: width * height)
+        var b = [UInt8](repeating: 85, count: width * height)
+        let generated = [UInt8](repeating: 60, count: width * height)
+        let left = width / 30, right = width / 9, top = height / 28, bottom = height / 20
+        for y in top..<bottom { for x in left..<right {
+            let value: UInt8 = y < top + 2 || y >= bottom - 2 || x < left + 2 || x >= right - 2 ? 30 : 145
+            a[y * width + x] = value; b[y * width + x] = value
+        } }
+        for y in bottom..<(bottom + 4) { for x in left..<(left + (right - left) / 3) {
+            b[y * width + x] = 30
+        } }
+        let previous = try buffer(a, width: width, height: height, tenBit: tenBit)
+        let current = try buffer(b, width: width, height: height, tenBit: tenBit)
+        let plain = try buffer(generated, width: width, height: height, tenBit: tenBit)
+        let regions = HUDDetector.detect(previous: previous, current: current)
+        try #require(!regions.isEmpty)
+        let output = try apply(previous, current, plain, regions: [], hudRegions: regions)
+        let pixels = luma(output)
+        var changes = 0, wrongMeterPixels = 0
+        for y in 0..<height { for x in 0..<width {
+            if x >= left && x < right && y >= top && y < bottom {
+                if pixels[y * width + x] != b[y * width + x] { wrongMeterPixels += 1 }
+            } else if pixels[y * width + x] != generated[y * width + x] { changes += 1 }
+        } }
+        #expect(wrongMeterPixels == 0)
+        #expect(changes == 0)
+        #expect(CVPixelBufferGetPixelFormatType(output) == CVPixelBufferGetPixelFormatType(current))
+        #expect(ColourTags.read(output) == ColourTags.read(current))
+    }
+
+    @Test func movingCornerRectangleIsNotAStableHUD() throws {
+        let width = 1280, height = 720
+        var a = [UInt8](repeating: 45, count: width * height)
+        var b = a
+        for y in 26..<40 {
+            for x in 40..<142 { a[y * width + x] = 145 }
+            for x in 80..<182 { b[y * width + x] = 145 }
+        }
+        #expect(HUDDetector.detect(previous: try buffer(a, width: width, height: height),
+                                   current: try buffer(b, width: width, height: height)).isEmpty)
+    }
+
     @Test func preservesStableGlyphsWithoutChangingPixelsOutsideTheLine() throws {
         let width = 64, height = 32
         var a = [UInt8](repeating: 45, count: width * height)
@@ -35,19 +104,21 @@ struct SubtitleGuardTests {
         #expect(luma(output) == generated)
     }
 
-    @Test func reticleArmsArePreservedWithoutHoldingTheCentreBackground() throws {
+    @Test(arguments: [false, true]) func reticleArmsArePreservedWithoutHoldingTheCentreBackground(tenBit: Bool) throws {
         let width = 1920, height = 1080
         var a = [UInt8](repeating: 45, count: width * height)
         var b = [UInt8](repeating: 70, count: width * height)
         let generated = [UInt8](repeating: 56, count: width * height)
         drawReticle(in: &a, width: width)
         drawReticle(in: &b, width: width)
-        let previous = try buffer(a, width: width, height: height)
-        let current = try buffer(b, width: width, height: height)
-        let plain = try buffer(generated, width: width, height: height)
+        let previous = try buffer(a, width: width, height: height, tenBit: tenBit)
+        let current = try buffer(b, width: width, height: height, tenBit: tenBit)
+        let plain = try buffer(generated, width: width, height: height, tenBit: tenBit)
         let regions = CrosshairDetector.regions(previous: previous, current: current)
         #expect(regions.count == 3)
         let output = try apply(previous, current, plain, regions: [])
+        #expect(CVPixelBufferGetPixelFormatType(output) == CVPixelBufferGetPixelFormatType(current))
+        #expect(ColourTags.read(output) == ColourTags.read(current))
         let pixels = luma(output)
         #expect(pixels[540 * width + 950] == 235)
         #expect(pixels[540 * width + 970] == 235)
@@ -112,11 +183,11 @@ struct SubtitleGuardTests {
     }
 
     private func apply(_ a: CVPixelBuffer, _ b: CVPixelBuffer, _ generated: CVPixelBuffer,
-                       regions: [SIMD4<Float>]) throws -> CVPixelBuffer {
+                       regions: [SIMD4<Float>], hudRegions: [SIMD4<Float>] = []) throws -> CVPixelBuffer {
         let blender = try FrameBlender(context: RenderContext.shared())
         let result = OfflineFrameGenHarness.Box()
         let finished = DispatchSemaphore(value: 0)
-        blender.keepSubtitles(previous: a, current: b, generated: generated, regions: regions) { output in
+        blender.keepSubtitles(previous: a, current: b, generated: generated, regions: regions, hudRegions: hudRegions) { output in
             result.value = output
             finished.signal()
         }
@@ -124,7 +195,20 @@ struct SubtitleGuardTests {
         return try #require(result.value)
     }
 
-    private func buffer(_ y: [UInt8], width: Int = 64, height: Int = 32) throws -> CVPixelBuffer {
+    private func buffer(_ y: [UInt8], width: Int = 64, height: Int = 32, tenBit: Bool = false) throws -> CVPixelBuffer {
+        if tenBit {
+            let frame = try HDRPresentTests.frame(width: width, height: height, y: 64, c: 512)
+            HDRInterpolationTests.tag(frame)
+            CVPixelBufferLockBaseAddress(frame, [])
+            defer { CVPixelBufferUnlockBaseAddress(frame, []) }
+            let base = CVPixelBufferGetBaseAddressOfPlane(frame, 0)!
+            let stride = CVPixelBufferGetBytesPerRowOfPlane(frame, 0)
+            for row in 0..<height {
+                let pixels = base.advanced(by: row * stride).assumingMemoryBound(to: UInt16.self)
+                for x in 0..<width { pixels[x] = UInt16(y[row * width + x]) << 8 }
+            }
+            return frame
+        }
         let bytes = Data(y + [UInt8](repeating: 128, count: y.count / 2))
         return try #require(OfflineFrameGenHarness.makeBuffer(bytes, w: width, h: height))
     }
@@ -135,6 +219,12 @@ struct SubtitleGuardTests {
         let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
         let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
         let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0)!.assumingMemoryBound(to: UInt8.self)
+        if PixelFormats.is10Bit420(buffer) {
+            return (0..<height).flatMap { y in
+                let row = UnsafeRawPointer(base + y * stride).assumingMemoryBound(to: UInt16.self)
+                return (0..<width).map { UInt8(row[$0] >> 8) }
+            }
+        }
         return (0..<height).flatMap { y in Array(UnsafeBufferPointer(start: base + y * stride, count: width)) }
     }
 }

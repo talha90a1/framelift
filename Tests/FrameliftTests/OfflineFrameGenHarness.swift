@@ -50,31 +50,25 @@ import Testing
             }
             sem.wait()
             let plain = try #require(plainBox.value)
-            blender.keepStatic(previous: pair[0], current: pair[1], generated: plain) { o in
-                guardBox.value = o; sem.signal()
-            }
-            sem.wait()
-            let guarded = try #require(guardBox.value)
             let regions = try SubtitleDetector.detect(in: pair[1])
             let reticle = CrosshairDetector.regions(previous: pair[0], current: pair[1])
             if expectReticle.contains(k) { #expect(reticle.count == 3) }
             if expectNoReticle.contains(k) { #expect(reticle.isEmpty) }
             print("reticle frame \(k): detected \(reticle)")
             if expectNoText.contains(k) { #expect(regions.isEmpty) }
-            let textBox = Box()
-            blender.keepSubtitles(previous: pair[0], current: pair[1], generated: plain, regions: regions) { out in
-                textBox.value = out; sem.signal()
+            let hud = HUDDetector.detect(previous: pair[0], current: pair[1])
+            blender.keepSubtitles(previous: pair[0], current: pair[1], generated: plain, regions: regions, hudRegions: hud) { output in
+                guardBox.value = output; sem.signal()
             }
             sem.wait()
-            let text = try #require(textBox.value)
+            let guarded = try #require(guardBox.value)
             print("subtitle frame \(k): detected \(regions)")
-            try checkSubtitleRegions(plain: plain, guarded: text, regions: Array(regions.prefix(5)) + reticle)
+            try checkSubtitleRegions(plain: plain, guarded: guarded, regions: Array(regions.prefix(5)) + reticle + hud)
             let name = String(format: "%05d", k)
             try Self.png(pair[0], "\(out)/\(name)-a-real.png")
             try Self.png(plain, "\(out)/\(name)-b-plain.png")
             try Self.png(guarded, "\(out)/\(name)-c-guard.png")
             try Self.png(pair[1], "\(out)/\(name)-d-real.png")
-            try Self.png(text, "\(out)/\(name)-e-subtitles.png")
         }
     }
 

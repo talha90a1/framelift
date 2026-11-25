@@ -56,10 +56,11 @@ struct HDRPresentTests {
     }
 
     /// An x420 (10-bit video range) IOSurface frame of one colour; samples sit in the top 10 bits.
-    static func frame(width: Int, height: Int, y: UInt16, c: UInt16) throws -> CVPixelBuffer {
+    static func frame(width: Int, height: Int, y: UInt16, c: UInt16,
+                      format: OSType = kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange) throws -> CVPixelBuffer {
         var pb: CVPixelBuffer?
         let attrs: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [:], kCVPixelBufferMetalCompatibilityKey as String: true]
-        CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange, attrs as CFDictionary, &pb)
+        CVPixelBufferCreate(nil, width, height, format, attrs as CFDictionary, &pb)
         let buffer = try #require(pb)
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }

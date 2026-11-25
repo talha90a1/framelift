@@ -71,12 +71,12 @@ struct SettingsStoreTests {
         #expect(SettingsStore.sanitized(settings).bitrateKbps == 100_000)
     }
 
-    @Test func oldHDRPreferenceUsesSDRSoInterpolationRemainsAvailable() {
+    @Test func hdrPreferenceKeepsTenBitStream() {
         var settings = StreamSettings()
         settings.codec = .hevcHDR
         settings.upscaler = .metalFX
         let sanitized = SettingsStore.sanitized(settings)
-        #expect(sanitized.codec == .hevc && sanitized.upscaler == .metalFX)
+        #expect(sanitized.codec == .hevcHDR && sanitized.upscaler == .metalFX)
     }
 
     @Test func oldGenerationOffPreferenceCannotDisableInterpolation() throws {
@@ -84,7 +84,7 @@ struct SettingsStoreTests {
         defer { removeTestDefaults(suite) }
         defaults.set(Data(#"{"frameGeneration":false,"codec":2,"keepStaticOverlays":true,"blendFallback":true}"#.utf8), forKey: SettingsStore.key)
         let loaded = store.load()
-        #expect(loaded.codec == .hevc && !loaded.keepStaticOverlays && !loaded.blendFallback)
+        #expect(loaded.codec == .hevcHDR && !loaded.keepStaticOverlays && !loaded.blendFallback)
         let saved = try JSONEncoder().encode(loaded)
         #expect(!(String(data: saved, encoding: .utf8) ?? "").contains("frameGeneration"))
     }

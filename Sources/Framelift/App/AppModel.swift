@@ -318,7 +318,6 @@ final class AppModel: ObservableObject {
     var effectiveSettings: StreamSettings {
         var result = settings
         result.targetDisplayID = SettingsStore.resolvedDisplayID(settings.targetDisplayID, available: displays.map(\.id))
-        if result.codec == .hevcHDR { result.codec = .hevc }
         return result
     }
 

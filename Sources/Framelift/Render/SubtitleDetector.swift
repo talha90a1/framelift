@@ -63,7 +63,9 @@ final class SubtitleDetector: @unchecked Sendable {
 enum CrosshairDetector {
     static func regions(previous: CVPixelBuffer, current: CVPixelBuffer) -> [SIMD4<Float>] {
         let width = CVPixelBufferGetWidth(current), height = CVPixelBufferGetHeight(current)
-        guard width >= 320, height >= 180, PixelFormats.is8Bit420(previous), PixelFormats.is8Bit420(current),
+        guard width >= 320, height >= 180,
+              CVPixelBufferGetPixelFormatType(previous) == CVPixelBufferGetPixelFormatType(current),
+              PixelFormats.is8Bit420(current) || PixelFormats.is10Bit420(current),
               CVPixelBufferGetWidth(previous) == width, CVPixelBufferGetHeight(previous) == height,
               CVPixelBufferLockBaseAddress(previous, .readOnly) == kCVReturnSuccess else { return [] }
         defer { CVPixelBufferUnlockBaseAddress(previous, .readOnly) }
@@ -72,6 +74,11 @@ enum CrosshairDetector {
         guard let a = CVPixelBufferGetBaseAddressOfPlane(previous, 0)?.assumingMemoryBound(to: UInt8.self),
               let b = CVPixelBufferGetBaseAddressOfPlane(current, 0)?.assumingMemoryBound(to: UInt8.self) else { return [] }
         let strideA = CVPixelBufferGetBytesPerRowOfPlane(previous, 0), strideB = CVPixelBufferGetBytesPerRowOfPlane(current, 0)
+        let deep = PixelFormats.is10Bit420(current)
+        func value(_ base: UnsafeMutablePointer<UInt8>, _ stride: Int, _ x: Int, _ y: Int) -> Int {
+            if deep { return Int(UnsafeRawPointer(base.advanced(by: y * stride + x * 2)).load(as: UInt16.self) >> 8) }
+            return Int(base[y * stride + x])
+        }
         let scale = Double(height) / 1080
         let cx = width / 2, cy = height / 2, band = max(1, Int(scale.rounded()))
         let start = max(2, Int((3 * scale).rounded())), end = max(start + 4, Int((24 * scale).rounded()))
@@ -86,12 +93,12 @@ enum CrosshairDetector {
                     let y = horizontal ? cy + offset : cy + distance
                     let left = horizontal ? SIMD2(x, cy - band - 1) : SIMD2(cx - band - 1, y)
                     let right = horizontal ? SIMD2(x, cy + band) : SIMD2(cx + band, y)
-                    let av = Int(a[y * strideA + x]), bv = Int(b[y * strideB + x])
+                    let av = value(a, strideA, x, y), bv = value(b, strideB, x, y)
                     guard av >= 80, bv >= 80, abs(av - bv) <= 48,
-                          av - Int(a[left.y * strideA + left.x]) >= 18,
-                          av - Int(a[right.y * strideA + right.x]) >= 18,
-                          bv - Int(b[left.y * strideB + left.x]) >= 18,
-                          bv - Int(b[right.y * strideB + right.x]) >= 18 else { continue }
+                          av - value(a, strideA, left.x, left.y) >= 18,
+                          av - value(a, strideA, right.x, right.y) >= 18,
+                          bv - value(b, strideB, left.x, left.y) >= 18,
+                          bv - value(b, strideB, right.x, right.y) >= 18 else { continue }
                     points[distance, default: []].append(SIMD2(x, y))
                 }
             }
@@ -106,8 +113,8 @@ enum CrosshairDetector {
             return (run.lowerBound, run.upperBound,
                     SIMD4(glyph.map(\.x).min()! - padding, glyph.map(\.y).min()! - padding,
                           glyph.map(\.x).max()! + padding + 1, glyph.map(\.y).max()! + padding + 1),
-                    glyph.reduce(0.0) { $0 + Double(a[$1.y * strideA + $1.x]) } / Double(glyph.count),
-                    glyph.reduce(0.0) { $0 + Double(b[$1.y * strideB + $1.x]) } / Double(glyph.count))
+                    glyph.reduce(0.0) { $0 + Double(value(a, strideA, $1.x, $1.y)) } / Double(glyph.count),
+                    glyph.reduce(0.0) { $0 + Double(value(b, strideB, $1.x, $1.y)) } / Double(glyph.count))
         }
 
         guard let left = arm(0), let right = arm(1), let down = arm(2),
@@ -116,8 +123,8 @@ enum CrosshairDetector {
               abs(down.near - right.near) <= max(2, Int(3 * scale)),
               abs(down.far - right.far) <= max(3, Int(5 * scale)) else { return [] }
         let centre = (-band..<band).flatMap { y in (-band..<band).map { x in SIMD2(cx + x, cy + y) } }
-        let centreA = centre.reduce(0.0) { $0 + Double(a[$1.y * strideA + $1.x]) } / Double(centre.count)
-        let centreB = centre.reduce(0.0) { $0 + Double(b[$1.y * strideB + $1.x]) } / Double(centre.count)
+        let centreA = centre.reduce(0.0) { $0 + Double(value(a, strideA, $1.x, $1.y)) } / Double(centre.count)
+        let centreB = centre.reduce(0.0) { $0 + Double(value(b, strideB, $1.x, $1.y)) } / Double(centre.count)
         let inkA = (left.inkA + right.inkA + down.inkA) / 3, inkB = (left.inkB + right.inkB + down.inkB) / 3
         guard abs(centreA - inkA) > 24 || abs(centreB - inkB) > 24 else { return [] }
         return [left.bounds, right.bounds, down.bounds].map {

@@ -5,17 +5,25 @@ import CoreVideo
 import Foundation
 import VideoToolbox
 
-struct InterpolationResult {
-    /// The generated mid frame (t = 0.5) as an 8-bit 420v IOSurface buffer; empty on failure.
+struct InterpolationResult: @unchecked Sendable {
+    /// The generated mid frame (t = 0.5), retaining the input bit depth; empty on failure.
     var frames: [CVPixelBuffer]
     /// Wall time from the call to the completion, ms.
     var wallMs: Double
     var error: String?
 }
 
+protocol FrameInterpolator: AnyObject, Sendable {
+    var backendName: String { get }
+    func isReady(for buffer: CVPixelBuffer) -> Bool
+    func prepare(width: Int, height: Int)
+    func interpolate(previous: CVPixelBuffer, current: CVPixelBuffer, completion: @escaping (InterpolationResult) -> Void)
+    func reset()
+}
+
 /// VTFrameProcessor + VTLowLatencyFrameInterpolation (macOS 26+). One request in flight at a
 /// time; a request while busy fails immediately (the pacer shows the real frame instead).
-final class AppleLLFIInterpolator: @unchecked Sendable {
+final class AppleLLFIInterpolator: FrameInterpolator, @unchecked Sendable {
     var backendName: String { "Apple ML interpolation" }
 
     static var isSupported: Bool { VTLowLatencyFrameInterpolationConfiguration.isSupported }

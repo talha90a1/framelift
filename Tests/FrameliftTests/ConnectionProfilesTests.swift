@@ -37,9 +37,11 @@ struct ConnectionProfilesTests {
         current.streamFPS = 60
         current.fullscreen = false
         current.targetDisplayID = 42
+        current.codec = .hevcHDR
         let wired = ConnectionProfile.ethernet.defaults(preserving: current)
         #expect(wired.streamFPS == 60 && !wired.fullscreen && wired.targetDisplayID == 42)
         #expect(!wired.keepStaticOverlays && !wired.blendFallback)
+        #expect(wired.codec == .hevcHDR)
     }
 
     @Test func changingNetworkProfilesDoesNotChangeOverlayVisibility() {

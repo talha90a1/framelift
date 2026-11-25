@@ -113,6 +113,24 @@ final class RenderContext: @unchecked Sendable {
         return (y, c, [ky, kc])
     }
 
+    func rgbaTexture(_ buffer: CVPixelBuffer) -> (MTLTexture, CVMetalTexture)? {
+        guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_64RGBAHalf else { return nil }
+        return packedTexture(buffer, format: .rgba16Float)
+    }
+
+    func flowTexture(_ buffer: CVPixelBuffer) -> (MTLTexture, CVMetalTexture)? {
+        guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_TwoComponent16Half else { return nil }
+        return packedTexture(buffer, format: .rg16Float)
+    }
+
+    private func packedTexture(_ buffer: CVPixelBuffer, format: MTLPixelFormat) -> (MTLTexture, CVMetalTexture)? {
+        var cv: CVMetalTexture?
+        guard CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, buffer, nil, format,
+            CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer), 0, &cv) == kCVReturnSuccess,
+            let cv, let texture = CVMetalTextureGetTexture(cv) else { return nil }
+        return (texture, cv)
+    }
+
     /// Writable view of one IOSurface plane (the texture retains the surface).
     func writablePlaneTexture(_ buffer: CVPixelBuffer, plane: Int, format: MTLPixelFormat) -> MTLTexture? {
         guard let surface = CVPixelBufferGetIOSurface(buffer)?.takeUnretainedValue() else { return nil }
@@ -136,9 +154,15 @@ enum PixelFormats {
         return f == videoRange420 || f == fullRange420
     }
 
-    static func makePool(width: Int, height: Int, minimum: Int) -> CVPixelBufferPool? {
+    static func is10Bit420(_ buffer: CVPixelBuffer) -> Bool {
+        let format = CVPixelBufferGetPixelFormatType(buffer)
+        return format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+    }
+
+    static func makePool(width: Int, height: Int, minimum: Int, format: OSType = videoRange420) -> CVPixelBufferPool? {
         let attrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: videoRange420,
+            kCVPixelBufferPixelFormatTypeKey as String: format,
             kCVPixelBufferWidthKey as String: width,
             kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),

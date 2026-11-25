@@ -67,7 +67,6 @@ struct SettingsStore {
     /// Clamps stored values to what the app offers: a PS5 preset, a bitrate and a sharpness in range.
     static func sanitized(_ settings: StreamSettings) -> StreamSettings {
         var result = settings
-        if result.codec == .hevcHDR { result.codec = .hevc }
         result.keepLLFIWarm = true
         result.keepStaticOverlays = false
         result.blendFallback = false

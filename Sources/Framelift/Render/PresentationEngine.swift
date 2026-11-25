@@ -12,6 +12,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     var onVideoPresented: ((Double, Double) -> Void)?
     var onFramePresented: ((CVPixelBuffer, ColourTags, Double) -> Void)?
     private let subtitles = SubtitleDetector()
+    private let hud = HUDDetector()
     // MARK: Public knobs (not in the frozen StreamSettings; wire from the app)
 
     /// In-frame FPS/latency HUD (drawn in the Metal pass).
@@ -38,7 +39,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     /// Apple ML interpolation (VTFrameProcessor low-latency frame interpolation). Until its model
     /// is ready, real frames are shown on display cadence.
     private var llfi: AppleLLFIInterpolator?
-    /// 50/50 blend that stands in when Apple's frame is late.
+    private var hdrInterpolator: HDRFrameInterpolator?
     private var blender: FrameBlender?
     private var gateReason = "starting"
     private let cutDetector: SceneCutDetector?
@@ -47,17 +48,14 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
 
     private var watchdog = PresentationWatchdog()
 
-    fileprivate enum Source: UInt8 {
+    private enum Source: UInt8 {
         // Raw values are the frames.csv backend column.
-        case none = 0, blend = 3, repeatReal = 4, appleML = 6
+        case repeatReal = 4, appleML = 6
     }
 
     private struct Record {
         var frame: DecodedFrame
-        /// Generated frames in phase order (a single blend while it stands in).
         var mids: [CVPixelBuffer] = []
-        var midSource: Source = .none
-        var blend: CVPixelBuffer?
         var cut: Bool?
     }
     private var records: [UInt64: Record] = [:]
@@ -125,7 +123,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             self.settings = new
             self.view.sharpness = Float(new.sharpness)
             self.view.upscaler = new.upscaler
-            if old.width != new.width || old.height != new.height {
+            if old.width != new.width || old.height != new.height || old.streamFPS != new.streamFPS || old.codec != new.codec {
                 self.rebuildBackends()
             }
             if old.streamFPS != new.streamFPS || old.width != new.width || old.height != new.height {
@@ -142,6 +140,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
 
     func reset() {
         subtitles.reset()
+        hud.reset()
         perform {
             self.epoch += 1
             self.records.removeAll()
@@ -152,6 +151,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             self.pacer.reset()
             self.interpSamples = 0
             self.llfi?.reset()
+            self.hdrInterpolator?.reset()
         }
     }
 
@@ -160,6 +160,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     private func rebuildBackends() {
         blender = nil
         llfi = nil
+        hdrInterpolator = nil
         interpSamples = 0
         pacer.reset()
         if internet && settings.streamFPS >= 50 {
@@ -168,12 +169,21 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         }
         guard let ctx else { setGate("none (no Metal)"); return }
         blender = try? FrameBlender(context: ctx)
+        if HDRFrameInterpolator.isSupported {
+            hdrInterpolator = try? HDRFrameInterpolator(context: ctx)
+            if settings.codec == .hevcHDR {
+                hdrInterpolator?.prepare(width: Int(settings.width), height: Int(settings.height))
+            }
+        }
         if AppleLLFIInterpolator.isSupported {
             let l = AppleLLFIInterpolator(keepWarm: settings.keepLLFIWarm)
-            l.prepare(width: Int(settings.width), height: Int(settings.height))
+            if settings.codec != .hevcHDR {
+                l.prepare(width: Int(settings.width), height: Int(settings.height))
+            }
             llfi = l
         }
-        Diagnostics.shared.event("render: backend \(llfi?.backendName ?? "none (Apple ML unavailable)")")
+        let backend: (any FrameInterpolator)? = settings.codec == .hevcHDR ? hdrInterpolator : llfi
+        Diagnostics.shared.event("render: backend \(backend?.backendName ?? "none (Apple ML unavailable)")")
     }
 
     private func displayAllowsGeneration() -> Bool {
@@ -231,7 +241,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     // MARK: Frame intake (render thread)
 
     private func receive(_ frame: DecodedFrame) {
-        if frame.discontinuity { subtitles.reset() }
+        if frame.discontinuity { subtitles.reset(); hud.reset() }
         if settings.streamFPS >= 50 && !internet {
             if frame.discontinuity { resetFrameCadence() }
             let thumb = LumaThumbnail(frame.pixelBuffer)
@@ -274,22 +284,31 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         previous = frame
         records[id] = Record(frame: frame)
 
-        let supportsInterpolation = frame.colourTags.hdrCurve == nil && PixelFormats.is8Bit420(frame.pixelBuffer)
+        let hdr = frame.colourTags.hdrCurve != nil && PixelFormats.is10Bit420(frame.pixelBuffer)
+        let backend: (any FrameInterpolator)? = hdr ? hdrInterpolator : llfi
+        let supportsInterpolation = hdr || (frame.colourTags.hdrCurve == nil && PixelFormats.is8Bit420(frame.pixelBuffer))
         let eligible = supportsInterpolation && displayAllowsGeneration()
-        let generating = eligible && llfi?.isReady(for: frame.pixelBuffer) == true
-        if !supportsInterpolation {
-            setGate("real frames (Apple ML takes 8-bit SDR only)")
+        let ready = backend?.isReady(for: frame.pixelBuffer) == true
+        let priming = eligible && hdr && ready && hdrInterpolator?.isPrimed == false
+        if priming, let prev, !frame.discontinuity, prev.colourTags == frame.colourTags {
+            hdrInterpolator?.prime(previous: prev.pixelBuffer, current: frame.pixelBuffer)
+        }
+        let generating = eligible && !priming && ready
+        if priming {
+            setGate("real frames (HDR model priming)")
+        } else if !supportsInterpolation {
+            setGate("real frames (unsupported pixel format)")
         } else if eligible && !generating {
-            setGate(llfi == nil ? "none (Apple ML unavailable)" : "none (Apple ML loading)")
-            llfi?.prepare(width: CVPixelBufferGetWidth(frame.pixelBuffer), height: CVPixelBufferGetHeight(frame.pixelBuffer))
+            setGate(backend == nil ? "none (Apple ML unavailable)" : "none (Apple ML loading)")
+            backend?.prepare(width: CVPixelBufferGetWidth(frame.pixelBuffer), height: CVPixelBufferGetHeight(frame.pixelBuffer))
         }
         pacer.generatesFrames = generating
-        var interp: AppleLLFIInterpolator?
+        var interp: (any FrameInterpolator)?
         if generating, let prev, !frame.discontinuity, prev.colourTags == frame.colourTags,
-            let llfi, llfi.isReady(for: prev.pixelBuffer)
+            let backend, backend.isReady(for: prev.pixelBuffer)
         {
-            setGate(llfi.backendName)
-            interp = llfi
+            setGate(backend.backendName)
+            interp = backend
         }
         let n = interp != nil ? 1 : 0
         let decoded = HostClock.seconds(frame.decodedHostTime > 0 ? frame.decodedHostTime : HostClock.now())
@@ -305,13 +324,12 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         prune()
     }
 
-    private func startPair(id: UInt64, previous: CVPixelBuffer, current: CVPixelBuffer, interpolator: AppleLLFIInterpolator) {
+    private func startPair(id: UInt64, previous: CVPixelBuffer, current: CVPixelBuffer, interpolator: any FrameInterpolator) {
         let ep = epoch
         guard let seq = records[id]?.frame.sequence else { return }
         if !settings.sceneCutFallback { records[id]?.cut = false }
         let anchor = pacer.anchor(of: id)
 
-        // Scene cut and the blend safety net run alongside; both are ~0.1 ms of GPU.
         if settings.sceneCutFallback, let det = cutDetector {
             det.detect(previous: previous, current: current) { [weak self] r in
                 self?.perform {
@@ -320,6 +338,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
                     self.records[id]?.cut = cut
                     if cut {
                         self.subtitles.reset()
+                        self.hud.reset()
                         Diagnostics.shared.event(String(format: "render: scene cut seq %llu (sad %.3f hist %.3f)", seq, r?.sad ?? 0, r?.histogramDistance ?? 0))
                         self.pacer.midFinished(id: id, ok: false)
                         self.resolveIfWaiting(id)
@@ -327,15 +346,6 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
                 }
             }
         }
-        if settings.blendFallback {
-            blender?.blend(previous: previous, current: current) { [weak self] out in
-                self?.perform {
-                    guard let self, ep == self.epoch else { return }
-                    self.records[id]?.blend = out
-                }
-            }
-        }
-
         Diagnostics.shared.mark(.interpStart, sequence: seq)
         let sp = Diagnostics.signposter.beginInterval("interpolate", id: Diagnostics.signposter.makeSignpostID())
         interpolator.interpolate(previous: previous, current: current) { [weak self] r in
@@ -351,33 +361,27 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
                 } else if let e = r.error {
                     Diagnostics.shared.event("render: \(interpolator.backendName) failed seq \(seq): \(e)")
                 }
-                guard r.frames.count == 1, self.settings.keepStaticOverlays || self.settings.protectSubtitles, let blender = self.blender else {
-                    self.midArrived(id: id, buffers: r.frames, source: .appleML)
+                guard r.frames.count == 1, self.settings.protectSubtitles, let blender = self.blender else {
+                    self.midArrived(id: id, buffers: r.frames)
                     return
                 }
                 let mid = r.frames[0]
                 let completion: (CVPixelBuffer?) -> Void = { [weak self] out in
                     self?.perform {
                         guard let self, ep == self.epoch else { return }
-                        self.midArrived(id: id, buffers: [out ?? mid], source: .appleML)
+                        self.midArrived(id: id, buffers: [out ?? mid])
                     }
                 }
-                if self.settings.keepStaticOverlays {
-                    blender.keepStatic(previous: previous, current: current, generated: mid, completion: completion)
-                } else {
-                    blender.keepSubtitles(previous: previous, current: current, generated: mid,
-                        regions: self.subtitles.regions(for: current, at: CACurrentMediaTime()), completion: completion)
-                }
+                blender.keepSubtitles(previous: previous, current: current, generated: mid,
+                    regions: self.subtitles.regions(for: current, at: CACurrentMediaTime()),
+                    hudRegions: self.hud.regions(previous: previous, current: current, at: CACurrentMediaTime()), completion: completion)
             }
         }
     }
 
-    /// The interpolator's generated frames are available. They replace a blend that stood in
-    /// (see waitExpired), for the phases still to come.
-    private func midArrived(id: UInt64, buffers: [CVPixelBuffer], source: Source) {
-        guard var rec = records[id], !buffers.isEmpty, rec.mids.isEmpty || rec.midSource == .blend else { return }
+    private func midArrived(id: UInt64, buffers: [CVPixelBuffer]) {
+        guard var rec = records[id], !buffers.isEmpty, rec.mids.isEmpty else { return }
         rec.mids = buffers
-        rec.midSource = source
         records[id] = rec
         if rec.cut == true { return }
         pacer.midFinished(id: id, ok: true)
@@ -465,10 +469,9 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         case let .generated(id, index):
             guard let rec = records[id], !rec.mids.isEmpty else { break }
             let mid = rec.mids[min(index, rec.mids.count - 1)]
-            if index == 0 || rec.midSource == .blend {
-                Diagnostics.shared.setBackend(rec.midSource.rawValue, sequence: rec.frame.sequence)
+            if index == 0 {
+                Diagnostics.shared.setBackend(Source.appleML.rawValue, sequence: rec.frame.sequence)
             }
-            stats.noteSource(rec.midSource)
             present(mid, generated: true, first: index == 0, frame: rec.frame, drawable: drawable, target: target, refresh: refresh)
         case let .waitForMid(id, _, deadline):
             let timer = thread.schedule(atHostTime: deadline) { [weak self] in self?.waitExpired(id: id) }
@@ -481,15 +484,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         guard let w = wait, w.id == id else { return }
         cancelWait()
         if let rec = records[id], rec.mids.isEmpty, rec.cut != true {
-            if let blend = rec.blend {
-                // Last resort before repeating: the motion-free blend.
-                records[id]?.mids = [blend]
-                records[id]?.midSource = .blend
-                pacer.midFinished(id: id, ok: true)
-                Diagnostics.shared.event("render: missed deadline seq \(rec.frame.sequence): blend shown")
-            } else {
-                Diagnostics.shared.event("render: missed deadline seq \(rec.frame.sequence): nothing generated, real frame shown early")
-            }
+            Diagnostics.shared.event("render: missed deadline seq \(rec.frame.sequence): nothing generated, real frame shown early")
         }
         handle(pacer.expireWait(id: id, target: w.target), target: w.target, refresh: w.refresh, deadline: w.deadline, drawable: w.drawable)
     }
@@ -562,7 +557,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             t.arrivalToPresentMsP50 = s.latencyP50
             t.droppedFrames = c.droppedReal + s.unpresented
             t.repeatedFrames = c.repeatedSlots
-            t.fallbackFrames = c.skippedMid + s.byBlend
+            t.fallbackFrames = c.skippedMid
             t.interpolationBackend = label
         }
         updateHUD(s, refresh: refresh)
@@ -677,11 +672,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         private var handoff = PercentileWindow(capacity: 150)
         private var generatedLatency = PercentileWindow(capacity: 120)
         private var interp = PercentileWindow(capacity: 120)
-        private var unpresented: UInt64 = 0, renderFailed: UInt64 = 0, blends: UInt64 = 0
-
-        fileprivate func noteSource(_ s: Source) {
-            lock.withLock { if s == .blend { blends += 1 } }
-        }
+        private var unpresented: UInt64 = 0, renderFailed: UInt64 = 0
 
         /// A present that got no drawable (or no command buffer) and was never committed.
         func noteRenderFailed() { lock.withLock { renderFailed += 1 } }
@@ -703,7 +694,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         struct Snapshot {
             var displayed, generated, interpP50, interpP99, latencyP50, generatedLatencyP50: Double
             var handoffMean, handoffP95, latencyMean, latencyP95: Double
-            var unpresented, renderFailed, byBlend: UInt64
+            var unpresented, renderFailed: UInt64
         }
 
         func snapshot(now: Double) -> Snapshot {
@@ -717,7 +708,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
                     latencyP50: latency.percentile(0.5), generatedLatencyP50: generatedLatency.percentile(0.5),
                     handoffMean: handoff.mean, handoffP95: handoff.percentile(0.95),
                     latencyMean: latency.mean, latencyP95: latency.percentile(0.95),
-                    unpresented: unpresented, renderFailed: renderFailed, byBlend: blends)
+                    unpresented: unpresented, renderFailed: renderFailed)
             }
         }
     }
