@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 1.0.3 - 2026-11-26
+
+### Added
+
+- PS5 Internet Play and Ethernet, Wi-Fi and internet connection profiles.
+- Encrypted, device-bound storage for PlayStation sign-in.
+
+### Improved
+
+- Video recovery, audio buffering, DualSense feedback and console wake.
+- SDR frame generation with subtitle, crosshair and HUD protection.
+- Direct display of real 60 fps Internet Play frames to reduce delay.
 
 ### Removed
 

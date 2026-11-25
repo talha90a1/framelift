@@ -10,7 +10,7 @@ NAME="Framelift-${VERSION}-macOS-arm64"
 
 IDENTITY=$(security find-identity -p codesigning | awk '/"Framelift Release"/ { print $2; exit }')
 [[ -n "$IDENTITY" ]] || { echo "error: no \"Framelift Release\" signing identity in the keychain" >&2; exit 1; }
-FRAMELIFT_SIGN_IDENTITY="$IDENTITY" scripts/bundle_app.sh
+FRAMELIFT_RELEASE_BUILD=1 FRAMELIFT_SIGN_IDENTITY="$IDENTITY" scripts/bundle_app.sh
 
 APP=dist/Framelift.app
 # Releases are built by GitHub Actions; a local build embeds the builder's home folder in compiler-made

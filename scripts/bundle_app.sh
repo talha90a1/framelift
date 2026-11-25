@@ -9,12 +9,16 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 
 CONFIG=release
 [[ " $* " == *" --debug "* ]] && CONFIG=debug
+[[ "${FRAMELIFT_RELEASE_BUILD:-0}" == 1 ]] && CONFIG=release
 
 [[ -d build/chiaki-dist/lib ]] || { echo "build/chiaki-dist missing: run scripts/build_chiaki.sh first" >&2; exit 1; }
 [[ -s Resources/AppIcon.icns ]] || { echo "Resources/AppIcon.icns missing" >&2; exit 1; }
 
 SWIFT_FLAGS=()
 [[ "$CONFIG" == release ]] && SWIFT_FLAGS+=(-Xswiftc -gnone)
+if [[ "${FRAMELIFT_RELEASE_BUILD:-0}" != 1 && "$(git branch --show-current 2>/dev/null || true)" == dev ]]; then
+  SWIFT_FLAGS+=(-Xswiftc -DFRAMELIFT_DEV_BUILD)
+fi
 swift build -c "$CONFIG" --product Framelift "${SWIFT_FLAGS[@]}"
 BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
 [[ -x "$BIN_DIR/Framelift" ]] || { echo "built executable not found in $BIN_DIR" >&2; exit 1; }

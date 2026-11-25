@@ -30,10 +30,6 @@ jobs:
               exit 1
             fi
             git merge-base --is-ancestor HEAD origin/main
-            if ! grep -qF 'static let enabledByDefault = false' Sources/Framelift/Shared/Diagnostics.swift; then
-              echo "::error::Turn off Debug logs by default before releasing"
-              exit 1
-            fi
           fi
           printf 'FRAMELIFT_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
           scripts/release_notes.sh "$version" > "$RUNNER_TEMP/release-notes.md"
