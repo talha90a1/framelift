@@ -286,6 +286,14 @@ final class AppModel: ObservableObject {
         busyGeneration += 1
         let attempt = busyGeneration
         guard let credentials = consoles.credentials(for: console.id) else { return reportMissingCredentials(console) }
+        busyMessage = "Checking \(console.nickname)…"
+        defer { if attempt == busyGeneration { busyMessage = nil } }
+        let foundConsoles = await ConsoleDiscovery.discover(timeout: 2)
+        guard attempt == busyGeneration else { return }
+        discovered = foundConsoles
+        adoptDiscoveredAddresses()
+        var console = console
+        console.host = match(console)?.address ?? console.host
         if profileSelection == .automatic {
             let detected = ConnectionProfile.detected(consoleLink: SystemReport.consoleLink(host: console.host))
             if detected != activeProfile {
@@ -295,17 +303,25 @@ final class AppModel: ObservableObject {
             }
         }
 
-        // A console in rest mode has to boot before it accepts a session.
-        if match(console)?.standby == true {
+        let standby = match(console)?.standby
+        if standby != false {
             busyMessage = "Waking \(console.nickname)…"
-            defer { if attempt == busyGeneration { busyMessage = nil } }
-            _ = await ConsoleDiscovery.wake(host: console.host, credentials: credentials)
-            guard await waitUntilAwake(console, attempt: attempt) else {
-                guard attempt == busyGeneration else { return }
-                errorAlert = .init(title: "\(console.nickname) didn't wake up", message: "Turn the PS5 on with the controller or power button, then try again.")
+            let sent = await ConsoleDiscovery.wake(host: console.host, credentials: credentials)
+            guard attempt == busyGeneration else { return }
+            guard sent else {
+                errorAlert = .init(title: "Couldn't wake \(console.nickname)", message: "The wake request couldn't be sent to \(console.host). Check the network connection and try again.")
                 return
             }
         }
+        if standby == true {
+            guard await waitUntilAwake(console, attempt: attempt) else {
+                guard attempt == busyGeneration else { return }
+                errorAlert = .init(title: "\(console.nickname) didn't wake up", message: "On the PS5, enable Stay Connected to the Internet and Enable Turning On PS5 from Network under Settings > System > Power Saving > Features Available in Rest Mode.")
+                return
+            }
+        }
+        guard attempt == busyGeneration else { return }
+        console.host = match(console)?.address ?? console.host
 
         var remembered = console
         remembered.lastSettings = settings
