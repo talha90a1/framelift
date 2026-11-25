@@ -11,6 +11,7 @@ CONFIG=release
 [[ " $* " == *" --debug "* ]] && CONFIG=debug
 
 [[ -d build/chiaki-dist/lib ]] || { echo "build/chiaki-dist missing: run scripts/build_chiaki.sh first" >&2; exit 1; }
+[[ -s Resources/AppIcon.icns ]] || { echo "Resources/AppIcon.icns missing" >&2; exit 1; }
 
 SWIFT_FLAGS=()
 [[ "$CONFIG" == release ]] && SWIFT_FLAGS+=(-Xswiftc -gnone)
@@ -25,7 +26,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/Framelift" "$APP/Contents/MacOS/Framelift"
 xcrun dyld_info -validate_only "$APP/Contents/MacOS/Framelift"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
-[[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"
 cp -R licenses "$APP/Contents/Resources/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
