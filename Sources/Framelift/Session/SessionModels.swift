@@ -54,11 +54,11 @@ enum SessionEvent {
 
 /// Readable text for chiaki quit reasons and bridge / Veyra / chiaki error codes.
 enum SessionMessages {
-    static func quitMessage(reason: Int32) -> String {
+    static func quitMessage(reason: Int32, internet: Bool = false) -> String {
         switch reason {
         case 0: "The session ended."
         case 1: "The stream was stopped."
-        case 2: "The session request didn’t complete. Check that the PS5 is on and connected to the same network."
+        case 2: internet ? "The session request did not complete. Check that the PS5 is online, then try connecting again." : "The session request didn’t complete. Check that the PS5 is on and connected to the same network."
         case 3: "The PS5 refused the connection. Check that Remote Play is enabled, or pair the console again."
         case 4: "Remote Play is already in use on another device."
         case 5: "Remote Play crashed on the PS5. Try again in a moment."

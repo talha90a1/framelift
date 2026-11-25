@@ -5,7 +5,7 @@ import CoreVideo
 import Foundation
 
 final class LatencyProbe: ControllerSink, FrameSink, @unchecked Sendable {
-    private let controller: ControllerSink
+    private weak var controller: ControllerSink?
     private let frames: FrameSink
     private let status: ProbeStatus
     private let lock = NSLock()
@@ -73,7 +73,7 @@ final class LatencyProbe: ControllerSink, FrameSink, @unchecked Sendable {
             }
             lastButtons = state.buttons
         }
-        controller.send(state)
+        controller?.send(state)
     }
 
     // MARK: FrameSink

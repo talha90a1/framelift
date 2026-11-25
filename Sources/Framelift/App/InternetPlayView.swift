@@ -8,9 +8,10 @@ struct InternetPlaySettings: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(account.signedIn ? "Signed in\(account.onlineID.map { " as \($0)" } ?? "")" : "Sign in to play away from home.")
+            Text(account.signedIn ? "Signed in\(account.onlineID.map { " as \($0)" } ?? "")" : "Not signed in")
             HStack {
                 Button(account.signedIn ? "Sign In Again…" : "Sign in with PlayStation…") { signingIn = true }
+                    .help("Pair your PS5 on the home network first.")
                 if account.signedIn {
                     Button("Sign Out") {
                         do { try account.signOut() } catch { self.error = error.localizedDescription }
@@ -18,8 +19,6 @@ struct InternetPlaySettings: View {
                 }
                 if account.loading { ProgressView().controlSize(.small) }
             }
-            Text("Pair your PS5 on the home network first. Sign-in is saved in Keychain; use Connect over Internet from the console’s menu.")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let error { Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
         }
         .sheet(isPresented: $signingIn) {

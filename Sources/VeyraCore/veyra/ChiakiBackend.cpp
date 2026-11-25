@@ -176,11 +176,14 @@ struct ChiakiBackend::Impl {
         case CHIAKI_EVENT_RUMBLE:{std::lock_guard lock(self.feedbackMutex);self.feedback.rumble=true;self.feedback.left=event->rumble.left;self.feedback.right=event->rumble.right;break;}
         case CHIAKI_EVENT_TRIGGER_EFFECTS:{std::lock_guard lock(self.feedbackMutex);auto& f=self.feedback;f.triggers=true;f.leftTrigger[0]=event->trigger_effects.type_left;f.rightTrigger[0]=event->trigger_effects.type_right;std::copy_n(event->trigger_effects.left,10,f.leftTrigger.begin()+1);std::copy_n(event->trigger_effects.right,10,f.rightTrigger.begin()+1);break;}
         case CHIAKI_EVENT_MOTION_RESET:{std::lock_guard lock(self.feedbackMutex);self.feedback.motionReset=true;break;}
+        case CHIAKI_EVENT_HAPTIC_INTENSITY:{std::lock_guard lock(self.feedbackMutex);self.feedback.hapticIntensityChanged=true;self.feedback.hapticIntensity=uint8_t(event->intensity);break;}
+        case CHIAKI_EVENT_TRIGGER_INTENSITY:{std::lock_guard lock(self.feedbackMutex);self.feedback.triggerIntensityChanged=true;self.feedback.triggerIntensity=uint8_t(event->intensity);break;}
         default:return; // No mic, standby or keyboard side effects.
         }
         // Framelift: rumble/trigger/motion feedback wakes the session owner.
         switch(event->type){
-        case CHIAKI_EVENT_RUMBLE:case CHIAKI_EVENT_TRIGGER_EFFECTS:case CHIAKI_EVENT_MOTION_RESET:self.token.wake();break;
+        case CHIAKI_EVENT_RUMBLE:case CHIAKI_EVENT_TRIGGER_EFFECTS:case CHIAKI_EVENT_MOTION_RESET:
+        case CHIAKI_EVENT_HAPTIC_INTENSITY:case CHIAKI_EVENT_TRIGGER_INTENSITY:self.token.wake();break;
         default:break;
 
         }

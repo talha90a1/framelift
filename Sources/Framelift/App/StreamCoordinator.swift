@@ -44,6 +44,7 @@ final class StreamCoordinator: ObservableObject {
     private var internetProvider: (() async throws -> InternetConnection)?
     private var recorder: StreamRecorder?
     private let recordingOutput = RecordingOutput()
+    private let recordingFinishes = DispatchGroup()
     @Published private(set) var isRecording = false
     @Published private(set) var recordingMessage: String?
     private var traceActive = false
@@ -52,6 +53,7 @@ final class StreamCoordinator: ObservableObject {
     private var statsTimer: Timer?
     private let videoBytes = ByteCounter()
     private var lastStatsTime: UInt64 = 0
+    private var timingTicks = 0
     /// Recent seconds with more than 3% packet loss (weak-connection notice, as in chiaki-ng).
     private var lossySeconds: [Bool] = []
     private var lastWeakNotice: UInt64 = 0
@@ -81,6 +83,7 @@ final class StreamCoordinator: ObservableObject {
     }
 
     var isActive: Bool { phase != .idle }
+    var hasPendingRecordings: Bool { isRecording || recordingFinishes.wait(timeout: .now()) == .timedOut }
 
     // MARK: Start / stop
 
@@ -110,7 +113,7 @@ final class StreamCoordinator: ObservableObject {
         engine.onFramePresented = { buffer, tags, time in recording.video(buffer, tags: tags, at: time) }
         recording.onError = { [weak self] message in
             Self.onMain {
-                self?.recordingMessage = message
+                self?.reportRecording(message)
                 self?.stopRecording()
             }
         }
@@ -150,7 +153,6 @@ final class StreamCoordinator: ObservableObject {
         settings.sceneCutFallback = newSettings.sceneCutFallback
         settings.showOverlay = newSettings.showOverlay
         settings.keepStaticOverlays = newSettings.keepStaticOverlays
-        settings.frameGeneration = newSettings.frameGeneration
         settings.protectSubtitles = newSettings.protectSubtitles
         settings.audioOffsetMs = newSettings.audioOffsetMs
         audio?.setOffset(milliseconds: newSettings.audioOffsetMs)
@@ -161,7 +163,7 @@ final class StreamCoordinator: ObservableObject {
         window?.overlayVisible = newSettings.showOverlay
         engine?.showFPSCounter = newSettings.showOverlay
         Diagnostics.shared.event(
-            "live settings sceneCutFallback=\(settings.sceneCutFallback) keepStatic=\(settings.keepStaticOverlays) blendFallback=\(settings.blendFallback) sharpness=\(settings.sharpness) upscaler=\(settings.upscaler.rawValue)"
+            "live settings frameGeneration=always subtitles=\(settings.protectSubtitles) sceneCutFallback=\(settings.sceneCutFallback) keepStatic=\(settings.keepStaticOverlays) blendFallback=\(settings.blendFallback) sharpness=\(settings.sharpness) upscaler=\(settings.upscaler.rawValue)"
         )
     }
 
@@ -231,8 +233,16 @@ final class StreamCoordinator: ObservableObject {
         let recorder = recorder
         session.onVideo = { unit in
             bytes.add(unit.data.count)
+            let started = HostClock.now()
             recorder?.append(unit)
+            let recorded = HostClock.now()
             decoder.decode(unit)
+            let finished = HostClock.now()
+            if HostClock.milliseconds(from: started, to: finished) > 20 {
+                Diagnostics.shared.event(String(format: "video callback slow: source-recording=%.2fms decoder-call=%.2fms bytes=%d",
+                                                HostClock.milliseconds(from: started, to: recorded),
+                                                HostClock.milliseconds(from: recorded, to: finished), unit.data.count))
+            }
         }
         let audio = audio
         let recording = recordingOutput
@@ -348,6 +358,7 @@ final class StreamCoordinator: ObservableObject {
             case .afterLive: "Connection lost. Retrying in \(Int(delay)) s (\(count))…"
             }
         phase = .connecting(status)
+        engine?.showNotice(status, seconds: max(delay + 3, 6))
         self.generation += 1  // silence the dying session
         window?.dismissLoginPrompt()
         let waiting = self.generation
@@ -401,6 +412,7 @@ final class StreamCoordinator: ObservableObject {
         let audio = audio
         let engine = engine
         let recorder = recorder
+        let recordingFinishes = recordingFinishes
         self.source = nil
         self.audio = nil
         self.recorder = nil
@@ -412,6 +424,7 @@ final class StreamCoordinator: ObservableObject {
             source?.stop()
             recorder?.finish()
             audio?.stop()
+            recordingFinishes.wait()
         }) { [weak self] in
             // The engine outlives the source so in-flight decoder output still has a sink.
             engine?.reset()
@@ -438,6 +451,8 @@ final class StreamCoordinator: ObservableObject {
             header: SystemReport.make(
                 settings: settings, controller: input.controllerName, controllerFeedback: input.feedbackSummary))
         traceActive = true
+        Diagnostics.shared.event("presentation timestamps are actual drawable times; blank CSV presentation fields mean not presented")
+        Diagnostics.shared.event("CSV decode_ms measures arrival to decoded output, including queueing and source recording; it is not decoder-call duration")
     }
 
     /// Chosen settings and environment. Never logs credentials or the account id.
@@ -452,7 +467,7 @@ final class StreamCoordinator: ObservableObject {
             "settings \(s.width)x\(s.height)@\(s.streamFPS) bitrate=\(s.bitrateKbps)kbps codec=\(s.codec.label) fullscreen=\(s.fullscreen) sceneCutFallback=\(s.sceneCutFallback) sharpness=\(s.sharpness)"
         )
         d.event(
-            "frame generation keepWarm=\(s.keepLLFIWarm) keepStatic=\(s.keepStaticOverlays) blendFallback=\(s.blendFallback) buffers=\(DisplayBuffering.stored().drawableCount)"
+            "frame generation enabled=always subtitles=\(s.protectSubtitles) keepWarm=\(s.keepLLFIWarm) keepStatic=\(s.keepStaticOverlays) blendFallback=\(s.blendFallback) buffers=\(DisplayBuffering.stored().drawableCount)"
         )
         if let screen = window?.screen {
             d.event("display \(screen.localizedName) \(DisplayInfo.hzText(Double(screen.maximumFramesPerSecond))) Hz frame=\(screen.frame)")
@@ -467,9 +482,11 @@ final class StreamCoordinator: ObservableObject {
         statsTimer?.invalidate()
         lastStatsTime = HostClock.now()
         _ = videoBytes.take()
-        statsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.statsTick() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        statsTimer = timer
     }
 
     private func statsTick() {
@@ -479,11 +496,13 @@ final class StreamCoordinator: ObservableObject {
         let kbps = Double(videoBytes.take()) * 8 / 1000 / elapsed
         Telemetry.shared.update { $0.bitrateKbps = kbps }
         guard let session = source else { return }
-        if attemptConnected, StreamHealth.videoTimedOut(lastArrival: videoBytes.lastArrival, now: now) {
+        if attemptConnected, attemptHasVideo, StreamHealth.videoTimedOut(lastArrival: videoBytes.lastArrival, now: now) {
             sessionEnded(transient: true, alert: EndAlert(title: "Connection lost", message: "No video has arrived from the PS5 for five seconds. Reconnect after checking the console and network."), generation: generation)
             return
         }
         if debugLogs { Diagnostics.shared.event(audio?.diagnostics ?? "audio output unavailable") }
+        timingTicks += 1
+        if debugLogs, timingTicks % 5 == 0 { Diagnostics.shared.event(input.takeTimingSummary()) }
         let stats = session.stats
         Telemetry.shared.update { $0.packetsLost = stats.packets_lost }
         noteLoss(received: stats.packets_received, lost: stats.packets_lost, now: now)
@@ -596,18 +615,22 @@ extension StreamCoordinator: StreamWindowDelegate {
         recordingOutput.start(url: VideoRecording.root.appendingPathComponent(name))
         isRecording = true
         recordingMessage = nil
+        engine?.showNotice("Recording started", seconds: 2)
     }
 
     private func stopRecording() {
         guard isRecording else { return }
         isRecording = false
         let generation = recordingGeneration
+        let finishes = recordingFinishes
+        finishes.enter()
         recordingOutput.stop { [weak self] result in
+            defer { finishes.leave() }
             Self.onMain {
                 guard let self, generation == self.recordingGeneration else { return }
                 switch result {
-                case .success(let url): self.recordingMessage = "Saved \(url.lastPathComponent)"
-                case .failure(let error): self.recordingMessage = error.localizedDescription
+                case .success(let url): self.reportRecording("Saved \(url.lastPathComponent)")
+                case .failure(let error): self.reportRecording(error.localizedDescription)
                 }
             }
         }
@@ -620,10 +643,15 @@ extension StreamCoordinator: StreamWindowDelegate {
         Task {
             let result = await BridgeInterop.run { Result { try output.screenshot(to: url) } }
             switch result {
-            case .success: recordingMessage = "Saved \(url.lastPathComponent)"
-            case .failure(let error): recordingMessage = error.localizedDescription
+            case .success: reportRecording("Saved \(url.lastPathComponent)")
+            case .failure(let error): reportRecording(error.localizedDescription)
             }
         }
+    }
+
+    private func reportRecording(_ message: String) {
+        recordingMessage = message
+        engine?.showNotice(message.hasPrefix("Saved ") ? "Saved in Movies/Framelift" : message, seconds: 5)
     }
 
     private static func mediaName() -> String {

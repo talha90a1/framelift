@@ -47,6 +47,7 @@ enum InlineShaderSources {
                                           texture2d<float> chromaG [[texture(7)]],
                                           constant uint& count [[buffer(0)]],
                                           constant float4* boxes [[buffer(1)]],
+                                          constant uint& textCount [[buffer(2)]],
                                           uint2 gid [[thread_position_in_grid]])
             {
                 if (gid.x >= chromaOut.get_width() || gid.y >= chromaOut.get_height()) return;
@@ -55,12 +56,15 @@ enum InlineShaderSources {
                 for (uint k = 0; k < 4; ++k) {
                     const uint2 at = gid * 2 + uint2(k & 1, k >> 1);
                     if (at.x >= lumaOut.get_width() || at.y >= lumaOut.get_height()) continue;
-                    const float2 uv = (float2(at) + 0.5) / float2(lumaB.get_width(), lumaB.get_height());
-                    bool inside = false;
-                    for (uint i = 0; i < count; ++i) inside |= all(uv >= boxes[i].xy) && all(uv <= boxes[i].zw);
+                    bool inside = false, reticle = false;
+                    for (uint i = 0; i < count; ++i) {
+                        const bool hit = all(float2(at) >= boxes[i].xy) && all(float2(at) < boxes[i].zw);
+                        inside |= hit;
+                        reticle |= hit && i >= textCount;
+                    }
                     const float b = lumaB.read(at).r, g = lumaG.read(at).r;
-                    float weight = 0;
-                    if (inside) {
+                    float weight = reticle ? 1 : 0;
+                    if (inside && !reticle) {
                         float white = 0, dark = 1, stableWhite = 0;
                         for (int y = -3; y <= 3; ++y) for (int x = -4; x <= 4; ++x) {
                             const uint2 p = uint2(clamp(int2(at) + int2(x, y), int2(0), last));

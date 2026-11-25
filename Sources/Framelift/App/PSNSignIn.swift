@@ -47,7 +47,7 @@ enum PSNSignIn {
             case .noCode: "Sign-in did not return a code. Try again."
             case let .http(code): "Sony's server answered with error \(code). Please try again."
             case .badResponse: "Sony's answer did not contain valid sign-in details."
-            case .signInRequired: "Sign in with PlayStation in Settings › Internet Play."
+            case .signInRequired: "Sign in with PlayStation in Settings › Stream › Internet Play."
             case .differentAccount: "Sign in with the same PlayStation account used to pair this PS5."
             }
         }

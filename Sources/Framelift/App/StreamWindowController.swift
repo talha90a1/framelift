@@ -32,6 +32,8 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     private let wantsFullscreen: Bool
     private var overlayOn: Bool
     private var eventMonitor: Any?
+    private var menuObservers: [NSObjectProtocol] = []
+    private var trackingMenu = false
     private var cursorHidden = false
     private var closingProgrammatically = false
     private var didClose = false
@@ -181,8 +183,17 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
 
     private func installEventMonitor() {
         guard eventMonitor == nil else { return }
+        let center = NotificationCenter.default
+        menuObservers = [
+            center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.trackingMenu = true }
+            },
+            center.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.trackingMenu = false }
+            }
+        ]
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.window, self.window.attachedSheet == nil else { return event }
+            guard let self, !self.trackingMenu, event.window === self.window, self.window.attachedSheet == nil else { return event }
             return self.route(event)
         }
     }
@@ -219,6 +230,9 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     private func teardownInput() {
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
         eventMonitor = nil
+        menuObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        menuObservers.removeAll()
+        trackingMenu = false
         showCursor()
     }
 

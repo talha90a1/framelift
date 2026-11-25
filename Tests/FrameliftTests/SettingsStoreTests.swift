@@ -29,9 +29,6 @@ struct SettingsStoreTests {
         settings.targetDisplayID = 4_128_835
         settings.fullscreen = false
         settings.showOverlay = true
-        settings.keepLLFIWarm = false
-        settings.keepStaticOverlays = true
-        settings.blendFallback = true
         store.save(settings)
         #expect(store.load() == settings)
     }
@@ -74,12 +71,22 @@ struct SettingsStoreTests {
         #expect(SettingsStore.sanitized(settings).bitrateKbps == 100_000)
     }
 
-    @Test func hdrAndUpscalerAreKept() {
+    @Test func oldHDRPreferenceUsesSDRSoInterpolationRemainsAvailable() {
         var settings = StreamSettings()
         settings.codec = .hevcHDR
         settings.upscaler = .metalFX
         let sanitized = SettingsStore.sanitized(settings)
-        #expect(sanitized.codec == .hevcHDR && sanitized.upscaler == .metalFX)
+        #expect(sanitized.codec == .hevc && sanitized.upscaler == .metalFX)
+    }
+
+    @Test func oldGenerationOffPreferenceCannotDisableInterpolation() throws {
+        let (store, defaults, suite) = makeStore()
+        defer { removeTestDefaults(suite) }
+        defaults.set(Data(#"{"frameGeneration":false,"codec":2,"keepStaticOverlays":true,"blendFallback":true}"#.utf8), forKey: SettingsStore.key)
+        let loaded = store.load()
+        #expect(loaded.codec == .hevc && !loaded.keepStaticOverlays && !loaded.blendFallback)
+        let saved = try JSONEncoder().encode(loaded)
+        #expect(!(String(data: saved, encoding: .utf8) ?? "").contains("frameGeneration"))
     }
 
     @Test func unknownUpscalerFallsBackToDefault() throws {
@@ -108,7 +115,7 @@ struct SettingsStoreTests {
         #expect(loaded.sharpness == StreamSettingsLimits.defaultSharpness)
     }
 
-    @Test func resetsOldMotionDefaultsOnce() throws {
+    @Test func oldMotionPreferencesCannotRestoreGhostingOptions() throws {
         let (store, defaults, suite) = makeStore()
         defer { removeTestDefaults(suite) }
         defaults.set(Data(#"{"bitrateKbps":50000,"keepStaticOverlays":true,"blendFallback":true}"#.utf8), forKey: SettingsStore.key)
@@ -117,7 +124,7 @@ struct SettingsStoreTests {
         migrated.keepStaticOverlays = true
         migrated.blendFallback = true
         store.save(migrated)
-        #expect(store.load() == migrated)
+        #expect(!store.load().keepStaticOverlays && !store.load().blendFallback)
     }
 
     @Test func pairedConsoleWithPartialSettingsDecodes() throws {
@@ -143,7 +150,7 @@ struct DefaultSettingsTests {
     @Test func newInstallDefaults() {
         let s = StreamSettings()
         #expect(s.width == 1920 && s.height == 1080 && s.streamFPS == 30)
-        #expect(s.bitrateKbps == 30000)
+        #expect(s.bitrateKbps == 15000)
         #expect(s.codec == .hevc)
         #expect(s.showOverlay == false)
         #expect(s.keepLLFIWarm && !s.keepStaticOverlays && !s.blendFallback)

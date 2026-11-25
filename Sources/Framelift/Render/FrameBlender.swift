@@ -30,9 +30,12 @@ final class FrameBlender: @unchecked Sendable {
 
     func keepSubtitles(previous: CVPixelBuffer, current: CVPixelBuffer, generated: CVPixelBuffer,
                        regions: [SIMD4<Float>], completion: @escaping (CVPixelBuffer?) -> Void) {
-        guard !regions.isEmpty else { completion(generated); return }
+        let text = Array(regions.prefix(5))
+        let glyphs = CrosshairDetector.regions(previous: previous, current: current)
+        let protected = text + glyphs
+        guard !protected.isEmpty else { completion(generated); return }
         guard let g = ctx.yuvTextures(generated) else { completion(nil); return }
-        run(subtitlePSO, previous: previous, current: current, extra: g, regions: regions, completion: completion)
+        run(subtitlePSO, previous: previous, current: current, extra: g, regions: protected, textCount: text.count, completion: completion)
     }
 
     /// Asynchronous, ~0.1 ms GPU; `completion` gets nil on failure.
@@ -41,7 +44,7 @@ final class FrameBlender: @unchecked Sendable {
     }
 
     private func run(_ pso: MTLComputePipelineState, previous: CVPixelBuffer, current: CVPixelBuffer,
-                     extra: (y: MTLTexture, c: MTLTexture, keep: [CVMetalTexture])?, regions: [SIMD4<Float>] = [],
+                     extra: (y: MTLTexture, c: MTLTexture, keep: [CVMetalTexture])?, regions: [SIMD4<Float>] = [], textCount: Int = 0,
                      completion: @escaping (CVPixelBuffer?) -> Void) {
         let w = CVPixelBufferGetWidth(current), h = CVPixelBufferGetHeight(current)
         lock.lock()
@@ -58,13 +61,18 @@ final class FrameBlender: @unchecked Sendable {
               let yOut = ctx.writablePlaneTexture(out, plane: 0, format: .r8Unorm),
               let cOut = ctx.writablePlaneTexture(out, plane: 1, format: .rg8Unorm),
               let cb = ctx.queue.makeCommandBuffer(), let enc = cb.makeComputeCommandEncoder() else { completion(nil); return }
-        cb.label = extra == nil ? "framelift.blend" : "framelift.keepStatic"
+        cb.label = extra == nil ? "framelift.blend" : (regions.isEmpty ? "framelift.keepStatic" : "framelift.protectSubtitles")
         enc.setComputePipelineState(pso)
         var count = UInt32(min(8, regions.count))
         enc.setBytes(&count, length: MemoryLayout<UInt32>.size, index: 0)
-        var boxes = Array(regions.prefix(8))
+        var boxes = regions.prefix(8).map { box in
+            SIMD4(Float(ceil(Double(box.x) * Double(w) - 0.5)), Float(ceil(Double(box.y) * Double(h) - 0.5)),
+                  Float(floor(Double(box.z) * Double(w) - 0.5) + 1), Float(floor(Double(box.w) * Double(h) - 0.5) + 1))
+        }
         boxes += Array(repeating: SIMD4<Float>.zero, count: 8 - boxes.count)
         enc.setBytes(&boxes, length: MemoryLayout<SIMD4<Float>>.stride * 8, index: 1)
+        var textCount = UInt32(textCount)
+        enc.setBytes(&textCount, length: MemoryLayout<UInt32>.size, index: 2)
         enc.setTexture(a.y, index: 0); enc.setTexture(b.y, index: 1)
         enc.setTexture(a.c, index: 2); enc.setTexture(b.c, index: 3)
         enc.setTexture(yOut, index: 5); enc.setTexture(cOut, index: 6)

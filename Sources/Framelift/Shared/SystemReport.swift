@@ -4,6 +4,7 @@ import AppKit
 import CoreGraphics
 import Darwin
 import Foundation
+import CoreWLAN
 import SystemConfiguration
 
 enum SystemReport {
@@ -56,7 +57,7 @@ enum SystemReport {
         [
             "stream \(s.width)x\(s.height)@\(s.streamFPS) bitrate=\(s.bitrateKbps)kbps codec=\(s.codec.label)",
             "display target=\(s.targetDisplayID.map(String.init) ?? "window's screen") fullscreen=\(s.fullscreen)",
-            "frame generation keepWarm=\(s.keepLLFIWarm) keepStatic=\(s.keepStaticOverlays) blendFallback=\(s.blendFallback) sceneCutFallback=\(s.sceneCutFallback) buffers=\(DisplayBuffering.stored(defaults).drawableCount)",
+            "frame generation enabled=always subtitles=\(s.protectSubtitles) keepWarm=\(s.keepLLFIWarm) keepStatic=\(s.keepStaticOverlays) blendFallback=\(s.blendFallback) sceneCutFallback=\(s.sceneCutFallback) buffers=\(DisplayBuffering.stored(defaults).drawableCount)",
             "touchpad=\(TouchpadMode.stored(defaults).rawValue) overlay=\(s.showOverlay) debugLogs=\(DebugLogs.stored(defaults))",
         ]
     }
@@ -98,7 +99,17 @@ enum SystemReport {
         let all = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] ?? []
         guard let interface = all.first(where: { SCNetworkInterfaceGetBSDName($0) as String? == bsd }) else { return bsd }
         let type = SCNetworkInterfaceGetInterfaceType(interface) as String?
-        if type == kSCNetworkInterfaceTypeIEEE80211 as String { return "Wi-Fi (\(bsd))" }
+        if type == kSCNetworkInterfaceTypeIEEE80211 as String {
+            let band = CWWiFiClient.shared().interface(withName: bsd)?.wlanChannel()?.channelBand
+            let label: String
+            switch band {
+            case .band2GHz: label = "Wi-Fi 2.4 GHz"
+            case .band5GHz: label = "Wi-Fi 5 GHz"
+            case .band6GHz: label = "Wi-Fi 6 GHz"
+            default: label = "Wi-Fi"
+            }
+            return "\(label) (\(bsd))"
+        }
         if type == kSCNetworkInterfaceTypeEthernet as String { return "Ethernet (\(bsd))" }
         return "\(type ?? "unknown") (\(bsd))"
     }

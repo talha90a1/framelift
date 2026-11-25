@@ -47,11 +47,9 @@ struct FrameliftApp: App {
                 }
             }
             CommandMenu("Stream") {
-                Toggle("Frame Generation", isOn: $model.settings.frameGeneration)
-                    .keyboardShortcut("g", modifiers: [.command, .shift])
                 Button(model.coordinator.isRecording ? "Stop Recording" : "Start Recording") { model.coordinator.toggleRecording() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
-                    .disabled(model.coordinator.phase != .streaming)
+                    .disabled(!model.coordinator.isRecording && model.coordinator.phase != .streaming)
                 Button("Save Screenshot") { model.coordinator.saveScreenshot() }
                     .keyboardShortcut("s", modifiers: [.command, .shift])
                     .disabled(model.coordinator.phase != .streaming)
@@ -72,6 +70,7 @@ struct FrameliftApp: App {
                     .keyboardShortcut("r")
                     .disabled(model.isDiscovering)
                 Divider()
+                Button("Show Recordings in Finder") { model.revealRecordings() }
                 Button("Show Logs in Finder") { model.revealLogs() }
                 Button("Export Logs…") { model.exportLogs() }
             }

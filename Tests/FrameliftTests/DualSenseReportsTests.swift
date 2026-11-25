@@ -5,6 +5,29 @@ import Testing
 @testable import Framelift
 
 @Suite struct DualSenseReportsTests {
+    @Test func automaticFeedbackUsesTheUSBPathWithoutBluetoothPCMStreaming() {
+        #expect(DualSenseFeedbackMode.automatic.usesRawHID(over: .usb))
+        #expect(!DualSenseFeedbackMode.automatic.usesRawHID(over: .bluetooth))
+        #expect(DualSenseFeedbackMode.exact.usesRawHID(over: .bluetooth))
+        #expect(!DualSenseFeedbackMode.compatible.usesRawHID(over: .usb))
+    }
+
+    @Test func consoleIntensityUsesSeparatePowerReductionNibbles() {
+        let haptic: [(ControllerEffectIntensity, UInt8)] = [(.off, 0x0F), (.strong, 0), (.medium, 2), (.weak, 3)]
+        let trigger: [(ControllerEffectIntensity, UInt8)] = [(.off, 0xF0), (.strong, 0), (.medium, 0x60), (.weak, 0x90)]
+        let full = DualSenseReports.powerSetupBlock()
+        for (h, low) in haptic {
+            for (t, high) in trigger {
+                let block = DualSenseReports.powerSetupBlock(haptic: h, trigger: t)
+                #expect(block[DualSenseReports.Common.motorPower] == low | high)
+                #expect(block[DualSenseReports.Common.valid1] & DualSenseReports.Valid1.motorPower != 0)
+                for i in block.indices where i != DualSenseReports.Common.motorPower {
+                    #expect(block[i] == full[i])
+                }
+            }
+        }
+    }
+
     @Test func crc32MatchesZlibCheckValue() {
         #expect(DualSenseReports.crc32(Array("123456789".utf8)) == 0xCBF4_3926)
         #expect(DualSenseReports.crc32([UInt8]()) == 0)
@@ -144,7 +167,7 @@ import Testing
         let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
         defer { removeTestDefaults(suite) }
-        #expect(DualSenseFeedbackMode.stored(defaults) == .exact)
+        #expect(DualSenseFeedbackMode.stored(defaults) == .automatic)
         defaults.set("compatible", forKey: DualSenseFeedbackMode.defaultsKey)
         #expect(DualSenseFeedbackMode.stored(defaults) == .compatible)
     }

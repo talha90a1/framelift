@@ -169,10 +169,6 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     }
 
     private func displayAllowsGeneration() -> Bool {
-        if !settings.frameGeneration {
-            setGate("real frames (frame generation off)")
-            return false
-        }
         if effectiveFPS >= 50 {
             setGate("real frames (noGeneration60: 60 fps source)")
             return false
@@ -506,9 +502,8 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         let sp = Diagnostics.signposter.beginInterval("present", id: Diagnostics.signposter.makeSignpostID())
         let ok = view.render(buffer, tags: frame.colourTags, drawable: drawable, targetTime: target, refresh: refresh) { [weak self] presented in
             Diagnostics.signposter.endInterval("present", sp)
-            let when = presented > 0 ? presented : target
-            if !generated || first {
-                Diagnostics.shared.mark(generated ? .midPresented : .realPresented, sequence: seq, at: HostClock.ticks(seconds: when))
+            if presented > 0, !generated || first {
+                Diagnostics.shared.mark(generated ? .midPresented : .realPresented, sequence: seq, at: HostClock.ticks(seconds: presented))
             }
             stats.notePresented(at: presented, generated: generated, arrival: arrival)
             // Glass time vs target lets the pacer see a backed-up present queue.
@@ -658,7 +653,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         let net = telemetry.snapshot
         var lines = [
             HUDLine(text: "\(fps) FPS  \(real) real + \(gen) gen  \(backend)", red: red ? 0..<fps.count : nil),
-            HUDLine(text: "lag \(Int(s.latencyP50.rounded())) ms  ML \(Int(s.interpP50.rounded())) ms"),
+            HUDLine(text: "Mac video \(Int(s.latencyP50.rounded())) ms  ML \(Int(s.interpP50.rounded())) ms"),
             HUDLine(text: String(format: "%.0f Mbps  lost %llu", net.bitrateKbps / 1000, net.packetsLost)),
         ]
         if let probe = LatencyProbe.status.text { lines.append(HUDLine(text: probe)) }

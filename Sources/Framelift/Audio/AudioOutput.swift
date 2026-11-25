@@ -61,6 +61,7 @@ final class AudioOutput: @unchecked Sendable {
         let channels = Int(chunk.channels)
         guard channels > 0, chunk.sampleRate > 0, !chunk.samples.isEmpty else { return }
         if chunk.discontinuity { resetSync() }
+        ring.noteEnqueue()
         let current = ring.sampleRate.load(ordering: .relaxed)
         if chunk.sampleRate != current {
             // Stream format changed: rebuild the graph at the new rate; audio until then is discarded.
@@ -88,7 +89,10 @@ final class AudioOutput: @unchecked Sendable {
         guard arrival > 0, presented > arrival else { return }
         syncLock.withLock {
             let underruns = ring.underruns.load(ordering: .relaxed)
-            if underruns > lastUnderruns { sync.noteUnderrun(); lastUnderruns = underruns }
+            if underruns > lastUnderruns {
+                sync.noteUnderrun(deliveryOutage: ring.deliveryIsRecovering())
+                lastUnderruns = underruns
+            }
             sync.observe(videoDelayMs: (presented - arrival) * 1000,
                          outputLatencyMs: outputLatencyMs, offsetMs: offsetMs)
             if sync.settled {
@@ -102,6 +106,7 @@ final class AudioOutput: @unchecked Sendable {
         syncLock.withLock {
             sync = AudioSync()
             lastUnderruns = ring.underruns.load(ordering: .relaxed)
+            ring.resetDeliveryClock()
         }
         ring.targetFrames.store(1920, ordering: .relaxed)
         ring.flushRequested.store(true, ordering: .releasing)
@@ -110,9 +115,12 @@ final class AudioOutput: @unchecked Sendable {
     }
 
     var diagnostics: String {
-        let target = syncLock.withLock { sync.targetMs }
-        return String(format: "audio playback target=%.1fms underruns=%d overflows=%d", target,
-                      ring.underruns.load(ordering: .relaxed), ring.overflows.load(ordering: .relaxed))
+        let state = syncLock.withLock { (sync.targetMs, sync.minimumTargetMs) }
+        return String(format: "audio playback target=%.1fms underruns=%d overflows=%d enqueue-gap-max=%.1fms callback-gap-max=%.1fms callback-frames-max=%d minimum=%.1fms delivery-recovery=%d", state.0,
+                      ring.underruns.load(ordering: .relaxed), ring.overflows.load(ordering: .relaxed),
+                      HostClock.seconds(ring.enqueueGapMax.load(ordering: .relaxed)) * 1000,
+                      HostClock.seconds(ring.callbackGapMax.load(ordering: .relaxed)) * 1000, ring.callbackFramesMax.load(ordering: .relaxed),
+                      state.1, ring.deliveryIsRecovering() ? 1 : 0)
     }
 
     // MARK: Engine lifecycle (on `queue`)
@@ -126,6 +134,7 @@ final class AudioOutput: @unchecked Sendable {
         let engine = AVAudioEngine()
         let ring = self.ring
         let node = AVAudioSourceNode(format: format) { isSilence, _, frameCount, abl in
+            ring.noteCallback(frames: Int(frameCount))
             let target = ring.targetFrames.load(ordering: .relaxed)
             let first = ring.firstAudioTime.load(ordering: .relaxed)
             let waiting = !ring.syncReady.load(ordering: .acquiring)
@@ -231,6 +240,51 @@ final class AudioRing: @unchecked Sendable {
     let readIndex = Atomic<UInt64>(0)
     let sampleRate = Atomic<UInt32>(48000)
     let pendingRate = Atomic<UInt32>(48000)
+    private let lastEnqueue = Atomic<UInt64>(0)
+    private let lastDeliveryOutage = Atomic<UInt64>(0)
+    private static let outageTicks = HostClock.ticks(seconds: AudioSync.maximumJitterMs / 1000)
+    private static let recoveryTicks = HostClock.ticks(seconds: 1)
+    private let lastCallback = Atomic<UInt64>(0)
+    let enqueueGapMax = Atomic<UInt64>(0)
+    let callbackGapMax = Atomic<UInt64>(0)
+    let callbackFramesMax = Atomic<Int>(0)
+
+    func noteEnqueue(at now: UInt64 = HostClock.now()) {
+        let previous = lastEnqueue.load(ordering: .relaxed)
+        if previous > 0, now >= previous {
+            let gap = now - previous
+            if gap > enqueueGapMax.load(ordering: .relaxed) { enqueueGapMax.store(gap, ordering: .relaxed) }
+            if gap > Self.outageTicks { lastDeliveryOutage.store(now, ordering: .relaxed) }
+        }
+        lastEnqueue.store(now, ordering: .releasing)
+    }
+
+    func deliveryIsRecovering(at now: UInt64 = HostClock.now()) -> Bool {
+        let last = lastEnqueue.load(ordering: .acquiring)
+        if last > 0, now >= last, now - last > Self.outageTicks { return true }
+        let outage = lastDeliveryOutage.load(ordering: .relaxed)
+        return outage > 0 && now >= outage && now - outage < Self.recoveryTicks
+    }
+
+    func resetDeliveryClock() {
+        lastDeliveryOutage.store(0, ordering: .relaxed)
+        lastEnqueue.store(0, ordering: .releasing)
+    }
+
+    func noteCallback(frames: Int) {
+        Self.noteGap(last: lastCallback, maximum: callbackGapMax)
+        if frames > callbackFramesMax.load(ordering: .relaxed) { callbackFramesMax.store(frames, ordering: .relaxed) }
+    }
+
+    private static func noteGap(last: borrowing Atomic<UInt64>, maximum: borrowing Atomic<UInt64>) {
+        let now = HostClock.now()
+        let previous = last.exchange(now, ordering: .relaxed)
+        if previous > 0, now >= previous {
+            let gap = now - previous
+            if gap > maximum.load(ordering: .relaxed) { maximum.store(gap, ordering: .relaxed) }
+        }
+    }
+
     let underruns = Atomic<Int>(0)
     let overflows = Atomic<Int>(0)
     let flushRequested = Atomic<Bool>(false)

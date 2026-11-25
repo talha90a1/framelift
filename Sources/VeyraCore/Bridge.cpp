@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // C ABI (VeyraBridge.h) over ChiakiBackend + SessionInbox + VideoIngress.
 // Uses chiaki-ng's AGPL-3.0-only + OpenSSL-exception APIs; retain both licenses.
-// Threading: one owner thread per session calls every backend method and the C callbacks; Chiaki
-// threads and vr_session_* calls only post into the inbox/commands and wake it.
+// One owner thread handles protocol, input and audio. Video callbacks use a separate worker
+// draining the same bounded inbox, so decoding or recording cannot block the owner.
 // Credentials live in PairingCredentials (wiped on destruction) and are never logged.
 #include "VeyraBridge.h"
 #include "ControllerOutbox.h"
 #include "LogRedaction.h"
 #include "PSNConnection.h"
+#include "VideoDeliveryWorker.h"
 #include "veyra/remoteplay/ChiakiBackend.h"
 #include "veyra/remoteplay/Discovery.h"
 #include "veyra/remoteplay/SessionInbox.h"
@@ -90,7 +91,7 @@ int32_t errorFrom(const BackendResult& r) noexcept {
     return r.code != 0 ? r.code : kErrInternal;
 }
 
-// Fixed-size window of latency samples (owner thread only).
+// Fixed-size latency window: one writer; other threads sort a copy.
 class LatencyWindow {
 public:
     void add(double ms) noexcept {
@@ -163,6 +164,7 @@ struct VRSession {
     // Command/wake state. Never held while calling the inbox, the backend or a C callback.
     std::mutex mutex;
     std::condition_variable cv;
+    framelift::VideoDeliveryWake videoWake;
     bool woken = false, stopRequested = false;
     bool startDone = false;
     int32_t startError = 0;
@@ -184,6 +186,7 @@ struct VRSession {
             self.woken = true;
         }
         self.cv.notify_one();
+        self.videoWake.notify();
     }
 
     void run() noexcept;
@@ -201,14 +204,17 @@ struct VRSession {
 };
 
 void VRSession::run() noexcept {
-    // Session owner/delivery thread: it hands every video unit, audio block and feedback event to
-    // the app, so it runs at user-interactive QoS (chiaki's own threads get it via patch 0100).
+    // Chiaki's protocol threads receive this QoS through patch 0100 as well.
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     bool started = false;
     try {
         SessionInbox inbox;
         inbox.setWakeHook(&VRSession::wakeHook, this);
         ChiakiBackend backend;
+        struct InvalidateInbox {
+            SessionInbox& inbox;
+            ~InvalidateInbox() { inbox.invalidate(); }
+        } invalidateInbox{inbox};
         struct RemoteBorrow {
             PSNConnection* connection;
             ~RemoteBorrow() { if (connection) connection->disarm(); }
@@ -250,11 +256,40 @@ void VRSession::run() noexcept {
         started = true;
         finishStart(0);
 
-        uint64_t videoUnits = 0, configUnits = 0, audioBlocks = 0, idrSent = 0, wakeups = 0, idleTimeouts = 0;
-        LatencyWindow videoQueueLatency, audioQueueLatency, videoCallbackTime;
+        uint64_t audioBlocks = 0, idrSent = 0, wakeups = 0, idleTimeouts = 0;
+        LatencyWindow audioQueueLatency;
+        struct VideoMetrics {
+            uint64_t units = 0, configs = 0;
+            LatencyWindow queueLatency, callbackTime;
+        } videoMetrics;
+        std::mutex videoMetricsMutex;
+        framelift::VideoDeliveryWorker videoWorker(inbox, videoWake, [&](QueuedVideo unit) {
+            const auto popped = monotonic100ns();
+            const auto& sample = unit.sample;
+            uint64_t configs = 0;
+            if (callbacks.video) {
+                if (unit.configBefore) {
+                    const auto& config = *unit.configBefore;
+                    callbacks.video(callbacks.user, config.payload.data(), config.payload.size(), true,
+                                    config.width, config.height, 0, false, hostTimeFromArrival(config.arrival100ns));
+                    configs = 1;
+                }
+                callbacks.video(callbacks.user, sample.payload.data(), sample.payload.size(), false,
+                                sample.width, sample.height, sample.framesLost,
+                                unit.resetDecoder || sample.referenceRecovered, hostTimeFromArrival(sample.arrival100ns));
+            }
+            const auto done = monotonic100ns();
+            std::lock_guard lock(videoMetricsMutex);
+            videoMetrics.queueLatency.add(ms100ns(sample.arrival100ns, popped));
+            if (callbacks.video) videoMetrics.callbackTime.add(ms100ns(popped, done));
+            ++videoMetrics.units;
+            videoMetrics.configs += configs;
+        });
         uint64_t pinEventsSeen = 0;
         bool connectedSent = false, terminalSent = false;
         HostTime lastStats = 0;
+        HostTime lastOwnerProgress = monotonic100ns();
+        double ownerLoopGapMax = 0;
         std::vector<ControllerState> controllerBatch;
         controllerBatch.reserve(ControllerQueue::kMaxPending + 1);
 
@@ -280,6 +315,7 @@ void VRSession::run() noexcept {
                 controllers.drain(monotonic100ns(), controllerBatch);
             }
             if (stop) break;
+            if (videoWorker.failed()) { emitEvent(VR_EVENT_FAILED, kErrInternal); break; }
 
             const auto status = inbox.status();
             const bool live = status.state != SessionState::Failed;
@@ -295,28 +331,6 @@ void VRSession::run() noexcept {
             // already drops non-IDR units until a clean IDR.
             if (idr) inbox.requestIdr(generation);
 
-            while (auto unit = inbox.tryVideo(monotonic100ns())) {
-                const auto& sample = unit->sample;
-                const auto popped = monotonic100ns();
-                videoQueueLatency.add(ms100ns(sample.arrival100ns, popped));
-                if (callbacks.video) {
-                    if (unit->configBefore) {
-                        const auto& config = *unit->configBefore;
-                        // recovered=false: the config is not a recovery point; the IDR right after it
-                        // carries resetDecoder.
-                        callbacks.video(callbacks.user, config.payload.data(), config.payload.size(), true,
-                                        config.width, config.height, 0, false,
-                                        hostTimeFromArrival(config.arrival100ns));
-                        ++configUnits;
-                    }
-                    callbacks.video(callbacks.user, sample.payload.data(), sample.payload.size(), false,
-                                    sample.width, sample.height, sample.framesLost,
-                                    unit->resetDecoder || sample.referenceRecovered,
-                                    hostTimeFromArrival(sample.arrival100ns));
-                    videoCallbackTime.add(ms100ns(popped, monotonic100ns()));
-                }
-                ++videoUnits;
-            }
             while (auto block = inbox.tryAudio()) {
                 audioQueueLatency.add(ms100ns(block->arrival100ns, monotonic100ns()));
                 if (callbacks.audio_timed && block->channels)
@@ -332,6 +346,8 @@ void VRSession::run() noexcept {
 
             // Feedback (rumble, adaptive triggers, haptics, motion reset).
             auto feedback = backend.takeFeedback();
+            if (feedback.hapticIntensityChanged) emitEvent(VR_EVENT_HAPTIC_INTENSITY, feedback.hapticIntensity);
+            if (feedback.triggerIntensityChanged) emitEvent(VR_EVENT_TRIGGER_INTENSITY, feedback.triggerIntensity);
             if (feedback.rumble) emitEvent(VR_EVENT_RUMBLE, 0, feedback.left, feedback.right);
             if (feedback.triggers && callbacks.triggers)
                 callbacks.triggers(callbacks.user, feedback.leftTrigger[0], feedback.leftTrigger.data() + 1,
@@ -360,6 +376,8 @@ void VRSession::run() noexcept {
             }
 
             const auto now = monotonic100ns();
+            ownerLoopGapMax = std::max(ownerLoopGapMax, ms100ns(lastOwnerProgress, now));
+            lastOwnerProgress = now;
             if (now - lastStats >= kStatsInterval100ns) {
                 lastStats = now;
                 const auto native = backend.snapshot();
@@ -417,20 +435,27 @@ void VRSession::run() noexcept {
                 d.chiaki_video_bytes = native.videoBytes;
                 d.server_target_bitrate = native.serverTargetBitrate;
                 d.quality_reports = native.qualityReports;
-                d.delivered_video_units = videoUnits;
-                d.delivered_config_units = configUnits;
+                const auto deliveredVideo = [&] {
+                    std::lock_guard lock(videoMetricsMutex);
+                    return videoMetrics;
+                }();
+                d.delivered_video_units = deliveredVideo.units;
+                d.delivered_config_units = deliveredVideo.configs;
                 d.delivered_audio_blocks = audioBlocks;
                 d.idr_sent = idrSent;
-                const auto vq = videoQueueLatency.summary();
+                const auto vq = deliveredVideo.queueLatency.summary();
                 const auto aq = audioQueueLatency.summary();
-                const auto vc = videoCallbackTime.summary();
+                const auto vc = deliveredVideo.callbackTime.summary();
                 d.video_queue_latency_ms_p50 = vq[0];
                 d.video_queue_latency_ms_p99 = vq[1];
                 d.video_queue_latency_ms_max = vq[2];
                 d.audio_queue_latency_ms_p50 = aq[0];
                 d.audio_queue_latency_ms_p99 = aq[1];
+                d.audio_queue_latency_ms_max = aq[2];
                 d.video_callback_ms_p50 = vc[0];
                 d.video_callback_ms_p99 = vc[1];
+                d.video_callback_ms_max = vc[2];
+                d.owner_loop_gap_ms_max = ownerLoopGapMax;
                 d.owner_wakeups = wakeups;
                 d.owner_idle_timeouts = idleTimeouts;
                 d.takion_version = native.takionVersion;
@@ -440,7 +465,7 @@ void VRSession::run() noexcept {
                 d.audio_source_channels = native.audioSourceChannels;
                 VRStats next{};
                 next.connected = native.connected;
-                next.video_units = videoUnits;
+                next.video_units = deliveredVideo.units;
                 next.audio_blocks = audioBlocks;
                 next.packets_received = native.packetReceived;
                 next.packets_lost = native.packetLost;
@@ -457,6 +482,7 @@ void VRSession::run() noexcept {
 
         // Veyra's required order: invalidate (stale callbacks rejected), stop+join Chiaki, finishStop.
         inbox.invalidate();
+        videoWorker.stop();
         if (psn) { psn->cancel(); psn->disarm(); }
         const auto stopped = backend.stop();
         if (stopped.ok) {

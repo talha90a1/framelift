@@ -35,9 +35,12 @@ typedef enum VREventType {
     VR_EVENT_RUMBLE = 5,        // a = left (0-255), b = right (0-255)
     VR_EVENT_MOTION_RESET = 6,
     VR_EVENT_CONNECTION_PROGRESS = 7,
+    VR_EVENT_HAPTIC_INTENSITY = 8, // code = 0 off, 1 strong, 2 medium, 3 weak
+    VR_EVENT_TRIGGER_INTENSITY = 9,
 } VREventType;
 
-// Called on core worker threads (never the main thread). Must not call back into vr_session_* stop/destroy.
+// Called on core worker threads (never the main thread). Video can run concurrently with audio/events.
+// Stop joins all callbacks. Must not call back into vr_session_* stop/destroy from a callback.
 typedef struct VRCallbacks {
     void *user;
     // One complete Annex-B access unit (or codec-config NALs when is_config). Pointer valid only during the call.
@@ -179,6 +182,10 @@ typedef struct VRDiagnostics {
     bool takion_v20_offered;                             // false when v20 is off or fell back to 12
     uint64_t packets_received_total, packets_lost_total; // whole session (packets_* above are a window)
     uint32_t audio_source_channels;                      // console's channel count (>2 is down-mixed)
+
+    // Appended delivery timing: callback/queue maxima use the same 256-sample windows above.
+    double video_callback_ms_max, audio_queue_latency_ms_max;
+    double owner_loop_gap_ms_max;                        // whole-session gap between completed owner iterations
 } VRDiagnostics;
 VRDiagnostics vr_session_diagnostics(VRSession *session);
 

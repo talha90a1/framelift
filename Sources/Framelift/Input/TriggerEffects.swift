@@ -6,42 +6,44 @@ import Foundation
 import GameController
 
 enum TriggerEffectMapper {
-    static func apply(type: UInt8, params raw: [UInt8], to trigger: GCDualSenseAdaptiveTrigger) {
+    static func apply(type: UInt8, params raw: [UInt8], to trigger: GCDualSenseAdaptiveTrigger, intensity: Float = 1) {
+        let scale = min(1, max(0, intensity))
+        guard scale > 0 else { trigger.setModeOff(); return }
         var p = [UInt8](repeating: 0, count: 10)
         for i in 0..<min(10, raw.count) { p[i] = raw[i] }
         let zones = UInt16(p[0]) | UInt16(p[1]) << 8
 
         switch type {
         case 0x01:
-            trigger.setModeFeedbackWithStartPosition(unit(p[0]), resistiveStrength: unit(p[1]))
+            trigger.setModeFeedbackWithStartPosition(unit(p[0]), resistiveStrength: unit(p[1]) * scale)
         case 0x02:
-            weapon(trigger, start: unit(p[0]), end: unit(p[1]), strength: unit(p[2]))
+            weapon(trigger, start: unit(p[0]), end: unit(p[1]), strength: unit(p[2]) * scale)
         case 0x06:
-            trigger.setModeVibrationWithStartPosition(unit(p[2]), amplitude: unit(p[1]), frequency: unit(p[0]))
+            trigger.setModeVibrationWithStartPosition(unit(p[2]), amplitude: unit(p[1]) * scale, frequency: unit(p[0]))
         case 0x11:
-            trigger.setModeFeedbackWithStartPosition(unit(p[0]), resistiveStrength: clamp(Float(p[1]) / 10))
+            trigger.setModeFeedbackWithStartPosition(unit(p[0]), resistiveStrength: clamp(Float(p[1]) / 10) * scale)
         case 0x12:
-            weapon(trigger, start: unit(p[0]), end: unit(p[1]), strength: clamp(Float(p[2]) / 10))
+            weapon(trigger, start: unit(p[0]), end: unit(p[1]), strength: clamp(Float(p[2]) / 10) * scale)
         case 0x21:
             let packed = le32(p, 2)
             var strengths = GCDualSenseAdaptiveTrigger.PositionalResistiveStrengths()
-            fill(&strengths.values) { zoneLevel(zones: zones, packed: packed, zone: $0) }
+            fill(&strengths.values) { zoneLevel(zones: zones, packed: packed, zone: $0) * scale }
             trigger.setModeFeedback(resistiveStrengths: strengths)
         case 0x25, 0x22:
             guard let (start, end) = zoneSpan(zones) else { trigger.setModeOff(); return }
-            weapon(trigger, start: Float(start) / 9, end: Float(end) / 9, strength: Float(p[2] & 7 + 1) / 8)
+            weapon(trigger, start: Float(start) / 9, end: Float(end) / 9, strength: Float(p[2] & 7 + 1) / 8 * scale)
         case 0x26:
             let packed = le32(p, 2)
             var amplitudes = GCDualSenseAdaptiveTrigger.PositionalAmplitudes()
-            fill(&amplitudes.values) { zoneLevel(zones: zones, packed: packed, zone: $0) }
+            fill(&amplitudes.values) { zoneLevel(zones: zones, packed: packed, zone: $0) * scale }
             trigger.setModeVibration(amplitudes: amplitudes, frequency: unit(p[8]))
         case 0x23:
             guard let (start, _) = zoneSpan(zones) else { trigger.setModeOff(); return }
-            trigger.setModeVibrationWithStartPosition(Float(start) / 9, amplitude: 0.6, frequency: unit(p[3]))
+            trigger.setModeVibrationWithStartPosition(Float(start) / 9, amplitude: 0.6 * scale, frequency: unit(p[3]))
         case 0x27:
             guard let (start, _) = zoneSpan(zones) else { trigger.setModeOff(); return }
             let amp = max(Float(max(p[2] & 7, (p[2] >> 3) & 7)) / 7, 0.15)
-            trigger.setModeVibrationWithStartPosition(Float(start) / 9, amplitude: amp, frequency: unit(p[3]))
+            trigger.setModeVibrationWithStartPosition(Float(start) / 9, amplitude: amp * scale, frequency: unit(p[3]))
         default:
             trigger.setModeOff()
         }

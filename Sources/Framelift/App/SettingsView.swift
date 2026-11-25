@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var updates: Updater
+    @AppStorage(DualSenseFeedbackMode.defaultsKey) private var feedback: DualSenseFeedbackMode = .automatic
     @AppStorage(TouchpadMode.defaultsKey) private var touchpad: TouchpadMode = .clickOnly
     @AppStorage(DebugLogs.defaultsKey) private var debugLogs = DebugLogs.enabledByDefault
     @AppStorage(VideoRecording.defaultsKey) private var recordVideo = false
@@ -24,7 +25,11 @@ struct SettingsView: View {
         .frame(width: 600, height: 560)
         .onAppear {
             model.refreshDisplays()
+            model.refreshConnectionProfile()
             refreshLogAvailability()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.refreshConnectionProfile()
         }
         .onChange(of: model.coordinator.phase) { refreshLogAvailability() }
         .confirmationDialog("Delete Framelift logs?", isPresented: $confirmDeleteLogs, titleVisibility: .visible) {
@@ -46,27 +51,27 @@ struct SettingsView: View {
                 Picker("Profile", selection: Binding(get: { model.profileSelection }, set: { model.selectProfile($0) })) {
                     ForEach(ConnectionProfile.allCases) { Text($0.title).tag($0) }
                 }
-                if model.profileSelection == .automatic {
-                    Text("Uses the console’s connection: \(model.activeProfile.title). Changes apply on the next connection.").settingsHelp()
+                .help("Local or internet play is chosen from the console’s Connect menu.")
+                LabeledContent("Connection", value: model.localConnectionName)
+                HStack {
+                    Text("\(model.activeProfile.recommendedBitrate / 1000) Mbps · HEVC").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Use Recommended") { model.restoreProfileDefaults() }
                 }
-                Text(model.activeProfile.recommendation).settingsHelp()
-                Button("Use Recommended Settings") { model.restoreProfileDefaults() }
-                Text("Each profile remembers your changes.").settingsHelp()
             }
-            Section("Video stream") {
-                Picker("Resolution and frame rate", selection: presetBinding) {
+            Section("60 fps output") {
+                LabeledContent("Frame generation", value: AppleLLFIInterpolator.isSupported ? "Apple ML" : "Unavailable")
+                Picker("Game preset", selection: presetBinding) {
                     ForEach(Self.presets) { Text($0.title).tag($0) }
                 }
                 LabeledContent("Maximum bitrate") {
                     HStack {
-                        Slider(value: bitrateBinding, in: bitrateRange, step: 1000)
+                        Slider(value: bitrateBinding, in: bitrateRange, step: 1)
                             .accessibilityLabel("Maximum bitrate in megabits per second")
                         Text("\(model.settings.bitrateKbps / 1000) Mbps").monospacedDigit().frame(width: 72, alignment: .trailing)
                     }
                 }
-                Text("Use 30 fps for a 30 fps game; frame generation can show it at 60 fps. Stream changes apply when you reconnect.").settingsHelp()
-                Toggle("HDR", isOn: hdrBinding)
-                Text("HDR needs a compatible display and uses the game’s original frame rate.").settingsHelp()
+                if model.coordinator.isActive { Text("Reconnect to apply stream changes.").settingsHelp() }
             }
             Section("Internet Play") { InternetPlaySettings(account: model.psn) }
         }
@@ -83,16 +88,8 @@ struct SettingsView: View {
                 }
                 Toggle("Fullscreen", isOn: $model.settings.fullscreen)
             }
-            Section("Motion and subtitles") {
-                Toggle("Frame generation", isOn: $model.settings.frameGeneration)
-                if model.settings.codec == .hevcHDR {
-                    Text("Frame generation is unavailable with HDR.").settingsHelp()
-                } else {
-                    Text("Smooths 30 fps games to 60 fps. It adds processing delay; it doesn’t make the game respond faster.").settingsHelp()
-                }
-                Toggle("Protect subtitles", isOn: $model.settings.protectSubtitles)
-                    .disabled(!model.settings.frameGeneration || model.settings.codec == .hevcHDR)
-                Text("Keeps detected subtitle text sharp during camera movement.").settingsHelp()
+            Section("Clarity") {
+                Toggle("Protect subtitles and crosshair", isOn: $model.settings.protectSubtitles)
             }
             Section("Upscaling") {
                 Picker("Upscaler", selection: $model.settings.upscaler) {
@@ -115,7 +112,7 @@ struct SettingsView: View {
     private var soundSettings: some View {
         Form {
             Section("Audio timing") {
-                Text("Sound follows the measured video delay. The output follows your Mac’s selected audio device.").settingsHelp()
+                LabeledContent("Sync", value: "Automatic")
                 LabeledContent("Sound offset") {
                     HStack {
                         Slider(value: $model.settings.audioOffsetMs, in: -250...250, step: 10)
@@ -123,7 +120,7 @@ struct SettingsView: View {
                         Text("\(Int(model.settings.audioOffsetMs)) ms").monospacedDigit().frame(width: 62)
                     }
                 }
-                Text("Negative plays sound earlier; positive plays it later. Bluetooth headphones may add delay that the app can’t remove.").settingsHelp()
+                .help("Negative plays sound earlier; positive plays it later.")
                 Button("Reset Sound Offset") { model.settings.audioOffsetMs = 0 }
             }
 
@@ -144,26 +141,24 @@ struct SettingsView: View {
 
     private var advancedSettings: some View {
         Form {
-            Section("Frame generation") {
-                Toggle("Keep interpolation ready", isOn: $model.settings.keepLLFIWarm)
-                Text("Uses extra GPU work to reduce generation time. Applies when you reconnect.").settingsHelp()
-                Toggle("Protect all static HUD details", isOn: $model.settings.keepStaticOverlays)
-                Toggle("Blend late frames", isOn: $model.settings.blendFallback)
-                Text("Both options can cause ghosting around moving objects. Leave them off unless they improve your game.").settingsHelp()
+            Section("Playback") {
                 Picker("Display buffers", selection: $buffering) {
                     ForEach(DisplayBuffering.allCases.reversed()) { Text($0.title).tag($0) }
                 }
             }
             Section("Controller") {
+                Picker("Feedback", selection: $feedback) {
+                    ForEach(DualSenseFeedbackMode.allCases) { Text($0.title).tag($0) }
+                }
+                .help("Automatic uses full effects over USB and standard feedback over Bluetooth.")
                 Picker("Touchpad", selection: $touchpad) {
                     ForEach(TouchpadMode.allCases) { Text($0.title).tag($0) }
                 }
-                Text("Click only avoids accidental touches. Touch and click also sends swipes and finger positions.").settingsHelp()
             }
             Section("Diagnostics") {
                 Toggle("Performance overlay (⇧⌘O)", isOn: $model.settings.showOverlay)
+                    .help("Mac video delay excludes controller, network and PS5 processing time.")
                 Toggle("Save debug logs", isOn: $debugLogs)
-                if debugLogs { Text("Measure response delay: ⇧⌘L while streaming, then press Options.").settingsHelp() }
                 HStack {
                     Button("Export Logs…") { model.exportLogs() }
                     Button("Show Logs") { model.revealLogs() }
@@ -171,10 +166,8 @@ struct SettingsView: View {
                 }
             }
             Section("Recordings") {
-                Text("While streaming, use Record or ⇧⌘R to save processed video with sound. ⇧⌘S saves a screenshot.").settingsHelp()
-                Toggle("Save source video for troubleshooting", isOn: $recordVideo)
-                Text("Video before processing, without sound. Saves up to 5 minutes on the next stream.").settingsHelp()
-                Button("Show Recordings") { model.revealRecordings() }
+                Toggle("Save source video", isOn: $recordVideo)
+                    .help("Video only, up to 5 minutes. Applies on the next stream.")
             }
         }
         .formStyle(.grouped)
@@ -191,7 +184,7 @@ struct SettingsView: View {
 
     private var bitrateRange: ClosedRange<Double> {
         let limits = StreamSettingsLimits.bitrateRangeKbps
-        return Double(limits.lowerBound)...Double(limits.upperBound)
+        return Double(limits.lowerBound) / 1000...Double(limits.upperBound) / 1000
     }
 
     private static let presets: [StreamPreset] = [.p1080fps30, .p1080fps60, .p720fps30, .p720fps60]
@@ -204,19 +197,11 @@ struct SettingsView: View {
         }
     }
 
-    private var hdrBinding: Binding<Bool> {
-        Binding {
-            model.settings.codec == .hevcHDR
-        } set: { on in
-            model.settings.codec = on ? .hevcHDR : .hevc
-        }
-    }
-
     private var bitrateBinding: Binding<Double> {
         Binding {
-            Double(model.settings.bitrateKbps)
+            Double(model.settings.bitrateKbps) / 1000
         } set: { value in
-            model.settings.bitrateKbps = UInt32(value.rounded())
+            model.settings.bitrateKbps = UInt32((value * 1000).rounded())
         }
     }
 }

@@ -183,10 +183,11 @@ final class PresentEncoder: @unchecked Sendable {
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         if let text = hud {
             let dwD = Double(dw), dhD = Double(dh)
-            let scale = max(2, (dhD / 360).rounded(.down))
-            let w = Double(text.width) * scale, h = Double(text.height) * scale
             let margin = (dhD * 0.02).rounded()
-            enc.setViewport(MTLViewport(originX: margin, originY: margin, width: min(w, dwD - margin), height: min(h, dhD - margin), znear: 0, zfar: 1))
+            let availableWidth = max(1, dwD - 2 * margin), availableHeight = max(1, dhD - 2 * margin)
+            let scale = min(max(2, (dhD / 360).rounded(.down)), availableWidth / Double(text.width), availableHeight / Double(text.height))
+            let w = Double(text.width) * scale, h = Double(text.height) * scale
+            enc.setViewport(MTLViewport(originX: margin, originY: margin, width: w, height: h, znear: 0, zfar: 1))
             enc.setRenderPipelineState(p.hud)
             enc.setFragmentTexture(text, index: 0)
             // HDR reference white is 203 nits.

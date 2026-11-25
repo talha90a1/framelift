@@ -15,8 +15,23 @@ import Testing
         let env = ProcessInfo.processInfo.environment
         guard let clip = env["FRAMELIFT_CLIP"], let out = env["FRAMELIFT_OUT"] else { return }
         let frames = (env["FRAMELIFT_FRAMES"] ?? "0").split(separator: ",").compactMap { Int($0) }
+        let expectReticle = Set((env["FRAMELIFT_RETICLE_FRAMES"] ?? "").split(separator: ",").compactMap { Int($0) })
+        let expectNoReticle = Set((env["FRAMELIFT_NO_RETICLE_FRAMES"] ?? "").split(separator: ",").compactMap { Int($0) })
+        let expectNoText = Set((env["FRAMELIFT_NO_SUBTITLE_FRAMES"] ?? "").split(separator: ",").compactMap { Int($0) })
         let (w, h) = (1920, 1080)
         try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
+
+        if env["FRAMELIFT_DETECT_ONLY"] == "1" {
+            for k in frames {
+                let pair = try Self.decode(clip: clip, from: k, count: 2, w: w, h: h)
+                try #require(pair.count == 2)
+                let regions = CrosshairDetector.regions(previous: pair[0], current: pair[1])
+                if expectReticle.contains(k) { #expect(regions.count == 3) }
+                if expectNoReticle.contains(k) { #expect(regions.isEmpty) }
+                print("reticle detector-only frame \(k): \(regions.count) arms")
+            }
+            return
+        }
 
         let interp = AppleLLFIInterpolator(keepWarm: false)
         interp.prepare(width: w, height: h)
@@ -41,6 +56,11 @@ import Testing
             sem.wait()
             let guarded = try #require(guardBox.value)
             let regions = try SubtitleDetector.detect(in: pair[1])
+            let reticle = CrosshairDetector.regions(previous: pair[0], current: pair[1])
+            if expectReticle.contains(k) { #expect(reticle.count == 3) }
+            if expectNoReticle.contains(k) { #expect(reticle.isEmpty) }
+            print("reticle frame \(k): detected \(reticle)")
+            if expectNoText.contains(k) { #expect(regions.isEmpty) }
             let textBox = Box()
             blender.keepSubtitles(previous: pair[0], current: pair[1], generated: plain, regions: regions) { out in
                 textBox.value = out; sem.signal()
@@ -48,6 +68,7 @@ import Testing
             sem.wait()
             let text = try #require(textBox.value)
             print("subtitle frame \(k): detected \(regions)")
+            try checkSubtitleRegions(plain: plain, guarded: text, regions: Array(regions.prefix(5)) + reticle)
             let name = String(format: "%05d", k)
             try Self.png(pair[0], "\(out)/\(name)-a-real.png")
             try Self.png(plain, "\(out)/\(name)-b-plain.png")
@@ -55,6 +76,28 @@ import Testing
             try Self.png(pair[1], "\(out)/\(name)-d-real.png")
             try Self.png(text, "\(out)/\(name)-e-subtitles.png")
         }
+    }
+
+    private func checkSubtitleRegions(plain: CVPixelBuffer, guarded: CVPixelBuffer, regions: [SIMD4<Float>]) throws {
+        CVPixelBufferLockBaseAddress(plain, .readOnly)
+        CVPixelBufferLockBaseAddress(guarded, .readOnly)
+        defer {
+            CVPixelBufferUnlockBaseAddress(guarded, .readOnly)
+            CVPixelBufferUnlockBaseAddress(plain, .readOnly)
+        }
+        let width = CVPixelBufferGetWidth(plain), height = CVPixelBufferGetHeight(plain)
+        let a = CVPixelBufferGetBaseAddressOfPlane(plain, 0)!.assumingMemoryBound(to: UInt8.self)
+        let b = CVPixelBufferGetBaseAddressOfPlane(guarded, 0)!.assumingMemoryBound(to: UInt8.self)
+        let strideA = CVPixelBufferGetBytesPerRowOfPlane(plain, 0), strideB = CVPixelBufferGetBytesPerRowOfPlane(guarded, 0)
+        var outsideChanged = 0, insideChanged = 0
+        for y in 0..<height { for x in 0..<width {
+            guard a[y * strideA + x] != b[y * strideB + x] else { continue }
+            let u = (Double(x) + 0.5) / Double(width), v = (Double(y) + 0.5) / Double(height)
+            let inside = regions.contains { u >= Double($0.x) && u <= Double($0.z) && v >= Double($0.y) && v <= Double($0.w) }
+            if inside { insideChanged += 1 } else { outsideChanged += 1 }
+        } }
+        #expect(outsideChanged == 0, "\(outsideChanged) luma pixels changed outside detected regions")
+        print("subtitle guard: \(insideChanged) pixels changed inside detected lines; \(outsideChanged) outside")
     }
 
     final class Box: @unchecked Sendable { var value: CVPixelBuffer? }

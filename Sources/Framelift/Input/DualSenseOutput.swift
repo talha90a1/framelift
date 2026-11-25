@@ -6,18 +6,29 @@
 import Foundation
 import IOKit
 
-/// App-level setting (StreamSettings is frozen). Exact falls back to Compatible automatically.
+/// Controller feedback preference. Full effects fall back to Standard when HID is unavailable.
 enum DualSenseFeedbackMode: String, CaseIterable, Codable, Identifiable, Sendable {
+    case automatic
     case exact
     case compatible
 
     static let defaultsKey = "framelift.dualsenseFeedback.v1"
 
     var id: String { rawValue }
-    var title: String { self == .exact ? "Exact (HID)" : "Compatible (GameController)" }
+    var title: String {
+        switch self {
+        case .automatic: "Automatic (recommended)"
+        case .exact: "Full effects (USB recommended)"
+        case .compatible: "Standard effects"
+        }
+    }
+
+    func usesRawHID(over transport: DualSenseTransport) -> Bool {
+        self == .exact || (self == .automatic && transport == .usb)
+    }
 
     static func stored(_ defaults: UserDefaults = .standard) -> DualSenseFeedbackMode {
-        defaults.string(forKey: defaultsKey).flatMap(DualSenseFeedbackMode.init(rawValue:)) ?? .exact
+        defaults.string(forKey: defaultsKey).flatMap(DualSenseFeedbackMode.init(rawValue:)) ?? .automatic
     }
 }
 
@@ -34,7 +45,19 @@ final class DualSenseOutput: @unchecked Sendable {
     let product: String
     private(set) var hapticsRoute: HapticsRoute
     /// True while the console's PCM goes to the pad as-is (no envelope needed).
-    var consumesPCM: Bool { hapticsRoute != .reportRumble }
+    var consumesPCM: Bool {
+        if usbAudio == nil, let audio = usbRecovery?.poll() {
+            usbAudio = audio
+            hapticsRoute = .usbAudio
+            setRumble(left: 0, right: 0)
+            log("dualsense USB audio became available; haptics switched to USB audio")
+            onRouteChanged?()
+        }
+        return hapticsRoute != .reportRumble
+    }
+
+    /// InputManager queue, after a delayed USB audio device becomes usable.
+    var onRouteChanged: (() -> Void)?
 
     /// Writer queue. A trigger write failed: use the GameController mapping for triggers.
     var onTriggerFailure: (() -> Void)?
@@ -42,11 +65,13 @@ final class DualSenseOutput: @unchecked Sendable {
     var onDeviceFailure: (() -> Void)?
 
     private let writer: DualSenseHIDWriter
-    private let log: (String) -> Void
+    private let log: @Sendable (String) -> Void
     private var pump: BluetoothHapticsPump?
-    private var usbAudio: DualSenseUSBHaptics?
+    private var usbAudio: (any USBHapticsDevice)?
+    private var usbRecovery: USBHapticsRecovery?
     private var lastTriggerBlock: [UInt8]?
     private var lastRumble: (UInt8, UInt8) = (0, 0)
+    private var lastIntensity: (ControllerEffectIntensity, ControllerEffectIntensity)?
 
     // Writer queue only.
     private var consecutiveFailures = 0
@@ -56,14 +81,21 @@ final class DualSenseOutput: @unchecked Sendable {
     private var loggedKinds = Set<DualSenseHIDWriter.Kind>()
 
     /// Opens the single connected DualSense. Nil (with the reason logged) when raw HID is unusable.
-    static func open(log: @escaping (String) -> Void) -> DualSenseOutput? {
+    static func open(mode: DualSenseFeedbackMode = .automatic, onTransport: ((DualSenseTransport) -> Void)? = nil, log: @escaping @Sendable (String) -> Void) -> DualSenseOutput? {
         switch DualSenseHIDDevice.openSingle() {
-        case .success(let device): return DualSenseOutput(device: device, log: log)
+        case .success(let device):
+            onTransport?(device.transport)
+            guard mode.usesRawHID(over: device.transport) else {
+                device.close()
+                log("dualsense: standard feedback selected for \(device.transport.rawValue)")
+                return nil
+            }
+            return DualSenseOutput(device: device, log: log)
         case .failure(let error): log("dualsense hid unavailable: \(error)"); return nil
         }
     }
 
-    private init(device: DualSenseHIDDevice, log: @escaping (String) -> Void) {
+    private init(device: DualSenseHIDDevice, log: @escaping @Sendable (String) -> Void) {
         transport = device.transport
         product = device.product
         self.log = log
@@ -85,16 +117,20 @@ final class DualSenseOutput: @unchecked Sendable {
             pump = BluetoothHapticsPump(writer: writer)
             hapticsRoute = .bluetoothStream
         case .usb:
-            if let audio = DualSenseUSBHaptics(log: log) {
-                usbAudio = audio
-                hapticsRoute = .usbAudio
-            }
+            usbRecovery = USBHapticsRecovery { [log] in DualSenseUSBHaptics(log: log) }
         }
     }
 
     var summary: String { "exact HID over \(transport.rawValue) (\(product)), haptics: \(hapticsRoute.rawValue)" }
 
     // MARK: Feedback
+
+    func setIntensity(haptic: ControllerEffectIntensity, trigger: ControllerEffectIntensity) {
+        if let lastIntensity, lastIntensity == (haptic, trigger) { return }
+        lastIntensity = (haptic, trigger)
+        writer.submit(.setup, DualSenseReports.stateReport(
+            DualSenseReports.powerSetupBlock(haptic: haptic, trigger: trigger), transport: transport))
+    }
 
     /// Sent on change only: re-sending restarts the effect.
     func setTriggers(typeLeft: UInt8, left: [UInt8], typeRight: UInt8, right: [UInt8], force: Bool = false) {
@@ -136,6 +172,8 @@ final class DualSenseOutput: @unchecked Sendable {
     func close(clearFeedback: Bool, wait: TimeInterval) {
         pump?.stop()
         pump = nil
+        usbRecovery?.stop()
+        usbRecovery = nil
         usbAudio?.stop()
         usbAudio = nil
         if clearFeedback {

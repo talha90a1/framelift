@@ -19,6 +19,24 @@ private func frame(luma: UInt8, seq: UInt64, arrival: UInt64) -> DecodedFrame {
 }
 
 struct LatencyProbeTests {
+    @Test func sessionAndProbeDoNotKeepEachOtherAlive() {
+        final class Session: ControllerSink {
+            var frames: FrameSink?
+            func send(_ state: ControllerSnapshot) {}
+        }
+        weak var releasedSession: Session?
+        weak var releasedProbe: LatencyProbe?
+        do {
+            let session = Session()
+            let probe = LatencyProbe(controller: session, frames: NullFrames(), status: ProbeStatus())
+            session.frames = probe
+            releasedSession = session
+            releasedProbe = probe
+        }
+        #expect(releasedSession == nil)
+        #expect(releasedProbe == nil)
+    }
+
     @Test func measuresPressToFirstBigPictureChange() {
         let c = NullController(), f = NullFrames()
         let status = ProbeStatus()

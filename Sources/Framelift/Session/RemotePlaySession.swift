@@ -16,7 +16,7 @@ struct InternetConnection: CustomStringConvertible, CustomDebugStringConvertible
 }
 
 final class RemotePlaySession: ControllerSink {
-    /// Called on the core's session thread with each Annex-B access unit (or codec config).
+    /// Called on the core's video worker with each Annex-B access unit (or codec config).
     var onVideo: ((EncodedVideoUnit) -> Void)?
     /// Called on the core's session thread.
     var onAudio: ((PCMChunk) -> Void)?
@@ -246,12 +246,18 @@ final class RemotePlaySession: ControllerSink {
         case VR_EVENT_MOTION_RESET:
             session.onFeedback?(.motionReset)
             return
+        case VR_EVENT_HAPTIC_INTENSITY:
+            if let intensity = ControllerEffectIntensity(rawValue: code) { session.onFeedback?(.hapticIntensity(intensity)) }
+            return
+        case VR_EVENT_TRIGGER_INTENSITY:
+            if let intensity = ControllerEffectIntensity(rawValue: code) { session.onFeedback?(.triggerIntensity(intensity)) }
+            return
         case VR_EVENT_CONNECTED:
             event = .connected
         case VR_EVENT_LOGIN_PIN_REQUEST:
             event = .loginPinRequired
         case VR_EVENT_QUIT:
-            event = .quit(reason: code, message: SessionMessages.quitMessage(reason: code))
+            event = .quit(reason: code, message: SessionMessages.quitMessage(reason: code, internet: session.internet != nil))
         case VR_EVENT_FAILED:
             event = .failed(code: code, message: SessionMessages.errorMessage(code: code))
         default:

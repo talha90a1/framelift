@@ -17,17 +17,9 @@ enum ConnectionProfile: String, Codable, CaseIterable, Identifiable {
 
     var recommendedBitrate: UInt32 {
         switch self {
-        case .ethernet: 50_000
+        case .ethernet: 100_000
         case .internet: 15_000
-        default: 30_000
-        }
-    }
-
-    var recommendation: String {
-        switch self {
-        case .ethernet: "50 Mbps · HEVC. More room for detail on a wired connection."
-        case .internet: "15 Mbps · HEVC. A starting point for playing away from home."
-        default: "30 Mbps · HEVC. Lower the bitrate if the connection drops frames."
+        default: 15_000
         }
     }
 
@@ -61,7 +53,11 @@ struct ConnectionProfiles {
     }
 
     func load(_ profile: ConnectionProfile, preserving current: StreamSettings) -> StreamSettings {
-        if let saved = all()[profile.rawValue] { return SettingsStore.sanitized(saved) }
+        if let saved = all()[profile.rawValue] {
+            var result = SettingsStore.sanitized(saved)
+            result.showOverlay = current.showOverlay
+            return result
+        }
         return profile == .custom ? current : profile.defaults(preserving: current)
     }
 

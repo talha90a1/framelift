@@ -168,7 +168,7 @@ final class AppleLLFIInterpolator: @unchecked Sendable {
         let now = HostClock.seconds(HostClock.now())
         lock.lock()
         let nextDue = lastRequest + requestInterval
-        guard session === primary, requestInterval > 0, now + warmDuration + 0.002 < nextDue,
+        guard session === primary, !primary.busy, requestInterval > 0, now + warmDuration + 0.002 < nextDue,
             let warmSession, !warmSession.busy,
             let (params, _) = warmSession.makeParameters(previous: previous, current: current)
         else {

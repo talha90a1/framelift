@@ -2,13 +2,15 @@
 import Foundation
 
 struct AudioSync {
+    static let maximumJitterMs: Double = 120
     private var delays: [Double] = []
     private(set) var targetMs: Double = 40
     private(set) var settled = false
     private(set) var minimumTargetMs: Double = 40
 
-    mutating func noteUnderrun() {
-        minimumTargetMs = min(120, minimumTargetMs + 10)
+    mutating func noteUnderrun(deliveryOutage: Bool = false) {
+        guard !deliveryOutage else { return }
+        minimumTargetMs = min(Self.maximumJitterMs, minimumTargetMs + 10)
         targetMs = max(targetMs, minimumTargetMs)
     }
 

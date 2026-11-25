@@ -6,7 +6,63 @@ import CoreAudio
 import Foundation
 import os
 
-final class DualSenseUSBHaptics: @unchecked Sendable {
+protocol USBHapticsDevice: AnyObject, Sendable {
+    func enqueue(_ samples: [Int16])
+    func stop()
+}
+
+final class USBHapticsRecovery: @unchecked Sendable {
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "framelift.dualsense.usb.open", qos: .utility)
+    private let open: @Sendable () -> (any USBHapticsDevice)?
+    private let clock: @Sendable () -> Double
+    private var nextAttempt = -Double.infinity
+    private var opening = false
+    private var finished = false
+    private var stopped = false
+    private var pending: (any USBHapticsDevice)?
+
+    init(clock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime },
+         open: @escaping @Sendable () -> (any USBHapticsDevice)?) {
+        self.clock = clock
+        self.open = open
+    }
+
+    func poll() -> (any USBHapticsDevice)? {
+        lock.lock()
+        if let pending {
+            self.pending = nil
+            finished = true
+            lock.unlock()
+            return pending
+        }
+        guard !stopped, !finished, !opening, clock() >= nextAttempt else { lock.unlock(); return nil }
+        opening = true
+        nextAttempt = clock() + 1
+        lock.unlock()
+        queue.async { [self] in
+            let device = open()
+            lock.lock()
+            opening = false
+            let discard = stopped
+            if !discard { pending = device }
+            lock.unlock()
+            if discard { device?.stop() }
+        }
+        return nil
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        let device = pending
+        pending = nil
+        lock.unlock()
+        device?.stop()
+    }
+}
+
+final class DualSenseUSBHaptics: USBHapticsDevice, @unchecked Sendable {
     /// ~100 ms of 3 kHz frames; older frames are dropped so latency stays bounded.
     static let ringFrames = 300
 

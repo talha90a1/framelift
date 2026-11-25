@@ -14,7 +14,8 @@ struct PairSheet: View {
     @State private var error: String?
     @State private var showSignIn = false
     @State private var manualAccount = false
-    @AppStorage("framelift.psnOnlineID") private var onlineID = ""
+    @State private var onlineID = ""
+    @State private var signedInAccountID = ""
 
     init(initialHost: String) {
         _host = State(initialValue: initialHost)
@@ -85,10 +86,14 @@ struct PairSheet: View {
         .frame(width: 540)
         .sheet(isPresented: $showSignIn) {
             PSNSignInSheet { account in
+                signedInAccountID = account.accountIDBase64
                 accountID = account.accountIDBase64
                 onlineID = account.onlineID ?? ""
                 model.consoles.psnAccountIDBase64 = account.accountIDBase64
             }
+        }
+        .onChange(of: accountID) {
+            if accountID != signedInAccountID { onlineID = "" }
         }
         .onDisappear { pairingTask?.cancel() }
         .onAppear {

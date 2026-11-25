@@ -29,6 +29,7 @@ final class InputManager: ObservableObject, @unchecked Sendable {
     private var observers: [NSObjectProtocol] = []
     private var timer: DispatchSourceTimer?
     private var controller: GCController?
+    private var controllerTransport: DualSenseTransport?
     private var watchedControllers: [GCController] = []
     private var controllerConfirmed = false
     private var haptics: ControllerHaptics?
@@ -37,10 +38,11 @@ final class InputManager: ObservableObject, @unchecked Sendable {
     /// Exact mode: a trigger write failed, so triggers use GameController (haptics stay on HID).
     private var hidTriggersFailed = false
     /// The setting the current controller was attached with; a change re-attaches it.
-    private var attachedFeedbackMode = DualSenseFeedbackMode.exact
+    private var attachedFeedbackMode = DualSenseFeedbackMode.automatic
     private let summaryLock = NSLock()
     private var _feedbackSummary = "none"
     private var lastSent: ControllerSnapshot?
+    private var timing = InputTiming()
 
     private struct TouchSlot { var down = false; var id: Int8 = -1 }
     private var touchSlots = [TouchSlot(), TouchSlot()]
@@ -49,6 +51,8 @@ final class InputManager: ObservableObject, @unchecked Sendable {
     /// 8-event feedback history. Reset whenever the controller changes or input stops.
     private var triggerFilter = TriggerFilter()
 
+    private var hapticIntensity: ControllerEffectIntensity = .strong
+    private var triggerIntensity: ControllerEffectIntensity = .strong
     private var rumble: (l: Float, r: Float) = (0, 0)
     private var hapticLevel: (l: Float, r: Float) = (0, 0)
     /// Last trigger effect from the console. GameController ignores trigger modes while the app is
@@ -151,10 +155,11 @@ final class InputManager: ObservableObject, @unchecked Sendable {
     }
 
     private func publishController(_ connected: ControllerIdentity?) {
+        let connection = connected == nil ? nil : controllerTransport.map { "Connected via \($0.rawValue)" } ?? (connected?.kind == .dualSense ? "Connected · transport unverified" : "Connected")
         DispatchQueue.main.async {
             let last = self.controllerStatus?.lastConnected ?? ControllerIdentity.stored()
             if let connected, connected != last { connected.save() }
-            let status = ControllerStatus(connected: connected, lastConnected: connected ?? last)
+            let status = ControllerStatus(connected: connected, lastConnected: connected ?? last, connectionDetail: connection)
             if self.controllerStatus != status { self.controllerStatus = status }
         }
     }
@@ -191,6 +196,7 @@ final class InputManager: ObservableObject, @unchecked Sendable {
 
     private func controllerChanged(_ candidate: GCController, profile: GCExtendedGamepad, element: GCControllerElement) {
         guard running, watchedControllers.contains(where: { $0 === candidate }) else { return }
+        if candidate.input.lastEventTimestamp > 0 { timing.event(latency: candidate.input.lastEventLatency) }
         let buttonPressed =
             (element as? GCControllerButtonInput)?.isPressed == true
             && element !== profile.leftTrigger && element !== profile.rightTrigger
@@ -222,6 +228,7 @@ final class InputManager: ObservableObject, @unchecked Sendable {
 
     private func attach(_ c: GCController) {
         controller = c
+        controllerTransport = nil
         c.playerIndex = .index1
         if let pad = c.extendedGamepad {
             // PS / Create / Share must reach the PS5 instead of triggering macOS gestures
@@ -243,7 +250,7 @@ final class InputManager: ObservableObject, @unchecked Sendable {
         let kind = kind(of: c)
         let isDualSense = kind == .dualSense
         attachedFeedbackMode = DualSenseFeedbackMode.stored()
-        if isDualSense, attachedFeedbackMode == .exact {
+        if isDualSense {
             openDualSense()
         } else {
             useCompatibleFeedback(reason: isDualSense ? "setting" : nil)
@@ -266,6 +273,7 @@ final class InputManager: ObservableObject, @unchecked Sendable {
         haptics?.shutdown()
         haptics = nil
         controller = nil
+        controllerTransport = nil
         touchSlots = [TouchSlot(), TouchSlot()]
         triggerFilter.reset()
     }
@@ -400,11 +408,18 @@ final class InputManager: ObservableObject, @unchecked Sendable {
     private func send(_ s: ControllerSnapshot, force: Bool) {
         if !force, let last = lastSent, last == s { return }
         lastSent = s
-        sink?.send(s)
+        if let target = sink {
+            let began = ProcessInfo.processInfo.systemUptime
+            target.send(s)
+            timing.sent(milliseconds: (ProcessInfo.processInfo.systemUptime - began) * 1000)
+        }
     }
 
     private func tick() {
         guard running else { return }
+        let began = ProcessInfo.processInfo.systemUptime
+        timing.tick(at: began)
+        defer { timing.body(milliseconds: (ProcessInfo.processInfo.systemUptime - began) * 1000) }
         var s = currentSnapshot()
         addMotion(into: &s)
         // Keepalive: always send on the tick, even when nothing changed.
@@ -417,10 +432,19 @@ final class InputManager: ObservableObject, @unchecked Sendable {
     func apply(_ feedback: ControllerFeedbackEvent) {
         queue.async { [self] in
             switch feedback {
+            case let .hapticIntensity(intensity):
+                hapticIntensity = intensity
+                dualSense?.setIntensity(haptic: hapticIntensity, trigger: triggerIntensity)
+                updateHaptics()
+            case let .triggerIntensity(intensity):
+                triggerIntensity = intensity
+                dualSense?.setIntensity(haptic: hapticIntensity, trigger: triggerIntensity)
+                applyLastTriggers(force: true)
             case let .rumble(l, r):
                 rumble = (Float(l) / 255, Float(r) / 255)
                 updateHaptics()
             case let .haptics(samples):
+                guard hapticIntensity != .off else { return }
                 if let dualSense, dualSense.consumesPCM {
                     dualSense.haptics(samples)
                     if samples.contains(where: { $0 != 0 }) { lastHapticsHostTime = HostClock.now() }
@@ -451,12 +475,23 @@ final class InputManager: ObservableObject, @unchecked Sendable {
         }
     }
 
+    func takeTimingSummary() -> String {
+        queue.sync {
+            let summary = timing.summary
+            timing = InputTiming()
+            return summary
+        }
+    }
+
     /// A stream ended (the manager itself keeps running): forget the console's feedback and leave
     /// the pad neutral, so the last effect neither stays on the triggers nor comes back on the next
     /// app activation. Returns the HID write stats for the stream trace (nil without HID). Main thread.
     @discardableResult
     func resetFeedback() -> String? {
         queue.sync { [self] in
+            hapticIntensity = .strong
+            triggerIntensity = .strong
+            dualSense?.setIntensity(haptic: .strong, trigger: .strong)
             lastTriggers = nil
             rumble = (0, 0)
             hapticLevel = (0, 0)
@@ -472,12 +507,18 @@ final class InputManager: ObservableObject, @unchecked Sendable {
     /// Handler queue only. `force` re-sends an unchanged HID effect (activation, reconnect).
     private func applyLastTriggers(force: Bool = false) {
         guard let t = lastTriggers, let ds = controller?.extendedGamepad as? GCDualSenseGamepad else { return }
+        if force { dualSense?.setIntensity(haptic: hapticIntensity, trigger: triggerIntensity) }
+        if triggerIntensity == .off {
+            if let dualSense, !hidTriggersFailed { dualSense.clearTriggers() }
+            else { ds.leftTrigger.setModeOff(); ds.rightTrigger.setModeOff() }
+            return
+        }
         if let dualSense, !hidTriggersFailed {
             dualSense.setTriggers(typeLeft: t.typeLeft, left: t.left, typeRight: t.typeRight, right: t.right, force: force)
             return
         }
-        TriggerEffectMapper.apply(type: t.typeLeft, params: t.left, to: ds.leftTrigger)
-        TriggerEffectMapper.apply(type: t.typeRight, params: t.right, to: ds.rightTrigger)
+        TriggerEffectMapper.apply(type: t.typeLeft, params: t.left, to: ds.leftTrigger, intensity: triggerIntensity.scale)
+        TriggerEffectMapper.apply(type: t.typeRight, params: t.right, to: ds.rightTrigger, intensity: triggerIntensity.scale)
     }
 
     private func updateHaptics() {
@@ -487,9 +528,10 @@ final class InputManager: ObservableObject, @unchecked Sendable {
             hapticLevel = (0, 0)
         }
         guard let dualSense else {
-            haptics?.set(left: max(rumble.l, hapticLevel.l), right: max(rumble.r, hapticLevel.r))
+            haptics?.set(left: max(rumble.l, hapticLevel.l) * hapticIntensity.scale, right: max(rumble.r, hapticLevel.r) * hapticIntensity.scale)
             return
         }
+        if hapticIntensity == .off { dualSense.setRumble(left: 0, right: 0); return }
         if dualSense.consumesPCM {
             // PCM goes to the pad as-is; report rumble would take the actuators out of audio mode.
             let streaming = HostClock.seconds(HostClock.now() &- lastHapticsHostTime) < Self.pcmActiveSeconds
@@ -522,8 +564,8 @@ final class InputManager: ObservableObject, @unchecked Sendable {
 
     /// Handler queue only. Falls back to Compatible when the HID device can't be opened.
     private func openDualSense() {
-        guard let output = DualSenseOutput.open(log: { Diagnostics.shared.event($0) }) else {
-            useCompatibleFeedback(reason: "HID unavailable")
+        guard let output = DualSenseOutput.open(mode: attachedFeedbackMode, onTransport: { self.controllerTransport = $0 }, log: { Diagnostics.shared.event($0) }) else {
+            useCompatibleFeedback(reason: attachedFeedbackMode == .exact ? "HID unavailable" : "setting")
             return
         }
         output.onTriggerFailure = { [weak self, weak output] in
@@ -544,6 +586,12 @@ final class InputManager: ObservableObject, @unchecked Sendable {
                 self.applyLastTriggers(force: true)
             }
         }
+        output.onRouteChanged = { [weak self, weak output] in
+            guard let self, let output, self.dualSense === output else { return }
+            self.setSummary(output.summary)
+            Diagnostics.shared.event("dualsense feedback: \(output.summary)")
+        }
+        output.setIntensity(haptic: hapticIntensity, trigger: triggerIntensity)
         output.clearTriggers()  // whatever GameController or an earlier app left on the pad
         dualSense = output
         haptics = nil

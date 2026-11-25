@@ -71,6 +71,8 @@ struct PcmBlock {
 };
 struct ControllerFeedback {
     bool rumble=false,triggers=false,motionReset=false;
+    bool hapticIntensityChanged=false,triggerIntensityChanged=false;
+    uint8_t hapticIntensity=1,triggerIntensity=1;
     uint8_t left=0,right=0;
     std::array<uint8_t,11> leftTrigger{},rightTrigger{};
     std::vector<int16_t> haptics; // Stereo PCM 3kHz; hard cap 600 samples (100ms).
@@ -78,6 +80,8 @@ struct ControllerFeedback {
         if(next.rumble){rumble=true;left=next.left;right=next.right;}
         if(next.triggers){triggers=true;leftTrigger=next.leftTrigger;rightTrigger=next.rightTrigger;}
         motionReset|=next.motionReset;
+        if(next.hapticIntensityChanged){hapticIntensityChanged=true;hapticIntensity=next.hapticIntensity;}
+        if(next.triggerIntensityChanged){triggerIntensityChanged=true;triggerIntensity=next.triggerIntensity;}
         if(next.haptics.size()>600)next.haptics.resize(600);
         if(haptics.size()+next.haptics.size()>600)haptics.clear();
         haptics.insert(haptics.end(),next.haptics.begin(),next.haptics.end());
