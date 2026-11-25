@@ -122,6 +122,8 @@ final class MetalPresenterView: NSView {
     private var requestedLayerSpace = LayerColourSpace.sRGB
     private var requestedLayerRevision = 0
     private var appliedLayerRevision = 0
+    private var appliedLayerSpace = LayerColourSpace.sRGB
+    private var displayHDR: DisplayHDR?
     /// Render thread: lines of the in-frame HUD, nil hides it. Drawn in the same render pass
     /// as the video (no overlay layer), so direct-to-display stays possible.
     func setHUD(_ lines: [HUDLine]?) {
@@ -199,6 +201,7 @@ final class MetalPresenterView: NSView {
 
     private func screenParametersChanged() {
         guard let screen = window?.screen else { return }
+        updateDisplayHDR()
         let now = RefreshCapability.of(screen)
         if stateLock.withLock({ _refreshCapability }) != now { rebuildDisplayLink() }
     }
@@ -211,7 +214,7 @@ final class MetalPresenterView: NSView {
         l.maximumDrawableCount = Self.drawableCount
         l.presentsWithTransaction = false
         l.displaySyncEnabled = true
-        l.wantsExtendedDynamicRangeContent = false
+        DisplayHDR(current: 1, potential: 1, reference: 0).apply(to: l, colour: .sRGB)
         // Default mapping's space (sRGB) until the first frame's tags arrive; see ColourPipeline.swift.
         l.colorspace = LayerColourSpace.sRGB.makeColorSpace()
         l.backgroundColor = NSColor.black.cgColor
@@ -302,6 +305,7 @@ final class MetalPresenterView: NSView {
             client?.presenterScreenChanged(self, display: nil)
             return
         }
+        updateDisplayHDR()
         let info = DisplayCatalog.info(for: screen)
         let hz = info?.refreshHz ?? 60
         let capability = RefreshCapability.of(screen)
@@ -351,6 +355,15 @@ final class MetalPresenterView: NSView {
 
     // MARK: Rendering (render thread)
 
+    private func updateDisplayHDR() {
+        let status = DisplayHDR(screen: window?.screen)
+        status.apply(to: metalLayer, colour: appliedLayerSpace)
+        if status != displayHDR {
+            displayHDR = status
+            Diagnostics.shared.event("colour: \(window?.screen?.localizedName ?? "no display") \(status.summary) output=\(appliedLayerSpace.isHDR && status.available ? "HDR" : "SDR") tone-map=\(appliedLayerSpace.isHDR ? "system" : "none")")
+        }
+    }
+
     private func updateColour(_ tags: ColourTags, mode: ColourMode) {
         if let source = colourSource, source.tags == tags, source.mode == mode { return }
         colourSource = (tags, mode)
@@ -365,8 +378,10 @@ final class MetalPresenterView: NSView {
         DispatchQueue.main.async { [weak self] in
             guard let self, let layer = self.metalLayer else { return }
             layer.pixelFormat = wanted.isHDR ? .bgr10a2Unorm : .bgra8Unorm
-            layer.wantsExtendedDynamicRangeContent = wanted.isHDR
             layer.colorspace = wanted.makeColorSpace()
+            self.appliedLayerSpace = wanted
+            self.displayHDR = nil
+            self.updateDisplayHDR()
             self.stateLock.withLock { self.appliedLayerRevision = revision }
         }
     }
