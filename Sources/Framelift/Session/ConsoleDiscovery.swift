@@ -14,8 +14,10 @@ enum ConsoleDiscovery {
                 vr_discover($0.baseAddress, Int32($0.count), milliseconds)
             }
             guard count > 0 else { return [] }
-            return hosts.prefix(Int(count)).map { host in
+            return hosts.prefix(Int(count)).compactMap { host -> DiscoveredConsole? in
                 let address = BridgeInterop.string(of: host.address)
+                // The PS5 can advertise an unspecified address while booting.
+                guard address != "0.0.0.0", address != "::", !address.isEmpty else { return nil }
                 let hostID = BridgeInterop.string(of: host.host_id).uppercased()
                 return DiscoveredConsole(
                     id: hostID.isEmpty ? address : hostID,
