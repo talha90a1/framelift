@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import Testing
-import VeyraCore
+import FrameliftCore
 @testable import Framelift
 
 struct CoreDiagnosticsTests {

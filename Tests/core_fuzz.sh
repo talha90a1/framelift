@@ -8,7 +8,7 @@ CLANG=${CLANG:-/opt/homebrew/opt/llvm/bin/clang++}
 OUT=build/core_fuzz; mkdir -p "$OUT/corpus"
 SDK=$(DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer} xcrun --show-sdk-path)
 "$CLANG" -std=c++20 -g -O1 -isysroot "$SDK" -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
-  -ISources/VeyraCore -ISources/VeyraCore/veyra/include Tests/core_fuzz.cpp Sources/VeyraCore/LogRedaction.cpp \
-  Sources/VeyraCore/veyra/AnnexB.cpp Sources/VeyraCore/veyra/Validation.cpp Sources/VeyraCore/veyra/Timeline.cpp \
-  Sources/VeyraCore/veyra/VideoIngress.cpp Sources/VeyraCore/veyra/SessionInbox.cpp -o "$OUT/core_fuzz"
+  -ISources/FrameliftCore -ISources/FrameliftCore/RemotePlay/include Tests/core_fuzz.cpp Sources/FrameliftCore/LogRedaction.cpp \
+  Sources/FrameliftCore/RemotePlay/AnnexB.cpp Sources/FrameliftCore/RemotePlay/Validation.cpp Sources/FrameliftCore/RemotePlay/Timeline.cpp \
+  Sources/FrameliftCore/RemotePlay/VideoIngress.cpp Sources/FrameliftCore/RemotePlay/SessionInbox.cpp -o "$OUT/core_fuzz"
 "$OUT/core_fuzz" -max_total_time="$SECS" -max_len=4096 -print_final_stats=1 "$OUT/corpus"

@@ -13,11 +13,11 @@ let package = Package(
     dependencies: [.package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1")],
     targets: [
         .target(
-            name: "VeyraCore",
-            path: "Sources/VeyraCore",
+            name: "FrameliftCore",
+            path: "Sources/FrameliftCore",
             publicHeadersPath: "include",
             cxxSettings: [
-                .headerSearchPath("veyra/include"),
+                .headerSearchPath("RemotePlay/include"),
                 .unsafeFlags(["-I\(chiakiDist)/include", "-I/opt/homebrew/opt/openssl@3/include"]),
             ],
             linkerSettings: [
@@ -42,7 +42,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Framelift",
-            dependencies: ["VeyraCore", .product(name: "Sparkle", package: "Sparkle")],
+            dependencies: ["FrameliftCore", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/Framelift",
             resources: [.copy("Render/Shaders"), .copy("App/DualSensePairing.usdz")],
             swiftSettings: [.swiftLanguageMode(.v5)],

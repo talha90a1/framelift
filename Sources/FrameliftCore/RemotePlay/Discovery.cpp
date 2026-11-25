@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Framelift: ported from Veyra's Windows Discovery.cpp. Broadcast targets
 // come from getifaddrs instead of iphlpapi GetAdaptersAddresses.
-#include "veyra/remoteplay/Discovery.h"
+#include "framelift/remoteplay/Discovery.h"
 #include <chiaki/discoveryservice.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -12,7 +12,7 @@
 #include <charconv>
 #include <condition_variable>
 #include <mutex>
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 namespace {
 struct DiscoveryResult {
     std::mutex mutex;DiscoveryReport report;bool includePs4=false;

@@ -3,7 +3,7 @@
 #include "VideoIngress.h"
 #include <memory>
 #include <stdexcept>
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 // Thread-safe callback boundary, NOT a replacement Remote Play protocol/session.
 // Invalidate before stopping Chiaki, join all its callbacks, then finishStop().
 // Tokens hold weak ownership so a saved callback cannot resurrect a destroyed inbox.
@@ -62,4 +62,4 @@ private:
 enum class VideoDelivery {Queued,Discarded,Malformed};
 VideoDelivery deliverChiakiVideo(const SessionInbox::Token&,VideoSample) noexcept;
 inline bool chiakiVideoCallbackResult(VideoDelivery d) noexcept {return d!=VideoDelivery::Malformed;}
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Uses chiaki-ng's AGPL-3.0-only + OpenSSL-exception APIs; retain both licenses.
-#include "veyra/remoteplay/ChiakiBackend.h"
+#include "framelift/remoteplay/ChiakiBackend.h"
 #include <chiaki/session.h>
 #if !defined(CHIAKI_VEYRA_VIDEO_METADATA_API) || CHIAKI_VEYRA_VIDEO_METADATA_API != 1
 #error The reviewed Chiaki video metadata patch is required
@@ -25,7 +25,7 @@
 #include <vector>
 #include <cstdio>
 #include <cstdlib>
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 static_assert(CHIAKI_PSN_ACCOUNT_ID_SIZE == 8);
 static_assert(CHIAKI_SESSION_AUTH_SIZE == 16);
 namespace {
@@ -397,4 +397,4 @@ NativeSnapshot ChiakiBackend::snapshot()const{
     out.takionVersion=s.takionVersion;out.takionV20Offered=s.takionV20Offered;out.audioSourceChannels=s.audioSourceChannels;
     return out;
 }
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

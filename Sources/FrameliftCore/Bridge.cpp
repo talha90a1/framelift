@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// C ABI (VeyraBridge.h) over ChiakiBackend + SessionInbox + VideoIngress.
+// C ABI (FrameliftBridge.h) over ChiakiBackend + SessionInbox + VideoIngress.
 // Uses chiaki-ng's AGPL-3.0-only + OpenSSL-exception APIs; retain both licenses.
 // One owner thread handles protocol, input and audio. Video callbacks use a separate worker
 // draining the same bounded inbox, so decoding or recording cannot block the owner.
 // Credentials live in PairingCredentials (wiped on destruction) and are never logged.
-#include "VeyraBridge.h"
+#include "FrameliftBridge.h"
 #include "ControllerOutbox.h"
 #include "LogRedaction.h"
 #include "PSNConnection.h"
 #include "VideoDeliveryWorker.h"
-#include "veyra/remoteplay/ChiakiBackend.h"
-#include "veyra/remoteplay/Discovery.h"
-#include "veyra/remoteplay/SessionInbox.h"
+#include "framelift/remoteplay/ChiakiBackend.h"
+#include "framelift/remoteplay/Discovery.h"
+#include "framelift/remoteplay/SessionInbox.h"
 #include <mach/mach_time.h>
 #include <pthread.h>
 #include <pthread/qos.h>
@@ -26,7 +26,7 @@
 #include <utility>
 #include <vector>
 
-using namespace veyra::remoteplay;
+using namespace framelift::remoteplay;
 
 namespace {
 enum : int32_t {
@@ -34,7 +34,7 @@ enum : int32_t {
     kErrInternal = -2002,
     kErrNoSession = -2003,
 };
-// A Chiaki QUIT is reported by Veyra's backend as token.failed(2000 + reason).
+// A Chiaki QUIT is reported by the backend as token.failed(2000 + reason).
 constexpr int kQuitBase = 2000;
 constexpr int kQuitReasonMax = 13; // CHIAKI_QUIT_REASON_PSN_REGIST_FAILED
 // Backstop only: media, events and feedback all wake the owner immediately.
@@ -59,7 +59,7 @@ uint64_t hostTimeFromArrival(HostTime arrival100ns) noexcept {
     return ageTicks < nowMach ? nowMach - ageTicks : 0;
 }
 
-ControllerState toVeyra(const VRControllerState& in) {
+ControllerState toCore(const VRControllerState& in) {
     ControllerState out;
     out.inputActive = true;
     out.buttons = in.buttons & 0xffffu;
@@ -77,7 +77,7 @@ ControllerState toVeyra(const VRControllerState& in) {
     return out;
 }
 
-Codec toVeyra(VRCodec codec) {
+Codec toCore(VRCodec codec) {
     switch (codec) {
     case VR_CODEC_H264: return Codec::H264;
     case VR_CODEC_H265: return Codec::H265;
@@ -341,7 +341,7 @@ void VRSession::run() noexcept {
                                     block->rate);
                 ++audioBlocks;
             }
-            // Veyra's ingress rate-limits IDR requests (500 ms) while it waits for a clean keyframe.
+            // The ingress rate-limits IDR requests (500 ms) while it waits for a clean keyframe.
             if (inbox.takeIdrRequest(monotonic100ns()) && backend.requestIdr().ok) ++idrSent;
 
             // Feedback (rumble, adaptive triggers, haptics, motion reset).
@@ -480,7 +480,7 @@ void VRSession::run() noexcept {
             }
         }
 
-        // Veyra's required order: invalidate (stale callbacks rejected), stop+join Chiaki, finishStop.
+        // Required shutdown order: invalidate (stale callbacks rejected), stop+join Chiaki, finishStop.
         inbox.invalidate();
         videoWorker.stop();
         if (psn) { psn->cancel(); psn->disarm(); }
@@ -523,7 +523,7 @@ static VRSession* startSession(const char* host, const VRCredentials* credential
         video.height = profile->height;
         video.fps = profile->fps;
         video.bitrateKbps = profile->bitrate_kbps;
-        video.codec = toVeyra(profile->codec);
+        video.codec = toCore(profile->codec);
         if (video.validate() || !validHost(host)) return fail(kErrInvalidArgument);
 
         auto session = std::make_unique<VRSession>();
@@ -603,7 +603,7 @@ int32_t vr_session_set_controller(VRSession* session, const VRControllerState* s
     if (!session) return kErrNoSession;
     if (!state) return kErrInvalidArgument;
     try {
-        auto next = toVeyra(*state);
+        auto next = toCore(*state);
         {
             std::lock_guard lock(session->mutex);
             // Edges queue in order, levels merge into the newest waiting state, and every IMU

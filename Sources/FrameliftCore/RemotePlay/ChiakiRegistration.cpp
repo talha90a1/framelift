@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // PS5 registration (pairing) through chiaki-ng; do not call from the UI thread.
-#include "veyra/remoteplay/ChiakiBackend.h"
+#include "framelift/remoteplay/ChiakiBackend.h"
 #include <chiaki/regist.h>
 #include <chiaki/log.h>
 #include <condition_variable>
 #include <algorithm>
 #include <cstring>
 #include <mutex>
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 namespace {
 struct RegistrationWait {
     std::mutex mutex;std::condition_variable cv;bool done=false,success=false;
@@ -78,4 +78,4 @@ PairResult pairLocalPs5(std::string host,const AccountId& account,std::string_vi
     out.nickname.assign(wait.nickname.data(),static_cast<std::size_t>(length));
     out.result={true,0,"registration_completed"};return out;
 }
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

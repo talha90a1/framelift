@@ -31,7 +31,7 @@ typedef enum VREventType {
     VR_EVENT_CONNECTED = 1,
     VR_EVENT_LOGIN_PIN_REQUEST = 2,
     VR_EVENT_QUIT = 3,          // code = chiaki quit reason
-    VR_EVENT_FAILED = 4,        // code = negative Veyra/bridge error or chiaki error
+    VR_EVENT_FAILED = 4,        // code = negative core/bridge error or chiaki error
     VR_EVENT_RUMBLE = 5,        // a = left (0-255), b = right (0-255)
     VR_EVENT_MOTION_RESET = 6,
     VR_EVENT_CONNECTION_PROGRESS = 7,
@@ -57,7 +57,7 @@ typedef struct VRCallbacks {
                         uint64_t first_sample, uint64_t arrival_host_time, bool discontinuity);
 } VRCallbacks;
 
-// Semantic buttons (same bit layout as Veyra ControllerState::Button).
+// Semantic buttons (same bit layout as ControllerState::Button).
 enum {
     VR_BTN_CROSS = 1u << 0, VR_BTN_CIRCLE = 1u << 1, VR_BTN_SQUARE = 1u << 2, VR_BTN_TRIANGLE = 1u << 3,
     VR_BTN_LEFT = 1u << 4, VR_BTN_RIGHT = 1u << 5, VR_BTN_UP = 1u << 6, VR_BTN_DOWN = 1u << 7,
@@ -140,19 +140,19 @@ int32_t vr_wakeup(const char *host, const char regist_key[16]);
 // Snapshot refreshed by the session thread every 100 ms (cheap to call at any rate).
 typedef struct VRDiagnostics {
     bool valid;                  // false for a NULL/unknown session
-    int32_t session_state;       // Veyra SessionState: 0 idle, 1 connecting, 2 waiting first frame,
+    int32_t session_state;       // SessionState: 0 idle, 1 connecting, 2 waiting first frame,
                                  // 3 streaming, 4 login PIN, 5 failed, 6 stopping
     int32_t inbox_error;         // last SessionInbox failure code (2000+n = chiaki quit reason n)
     int32_t last_quit_reason, last_api_error;
 
-    // Veyra VideoIngress (compressed AU queue between Chiaki and the delivery thread)
+    // VideoIngress (compressed AU queue between Chiaki and the delivery thread)
     uint64_t video_access_units, video_config_messages, video_accepted, video_consumed;
     uint64_t video_dropped, video_rejected, video_recoveries, video_idr_requests, video_epoch;
     uint32_t video_depth, video_high_water_depth;
     uint64_t video_bytes_queued, video_high_water_bytes;
     bool video_waiting_for_idr;
 
-    // Veyra AudioIngress
+    // AudioIngress
     uint64_t audio_accepted, audio_consumed, audio_dropped, audio_rejected;
     double audio_buffered_ms;
 

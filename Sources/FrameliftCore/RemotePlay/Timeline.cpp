@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
-#include "veyra/remoteplay/Timeline.h"
+#include "framelift/remoteplay/Timeline.h"
 #include <limits>
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 Sequence16Extender::Result Sequence16Extender::observe(std::uint16_t n) noexcept {
     if(!initialized_){initialized_=true;previous_=n;extended_=n;return {extended_,true,true,0};}
     const auto delta=static_cast<std::uint16_t>(n-previous_);
@@ -9,4 +9,4 @@ Sequence16Extender::Result Sequence16Extender::observe(std::uint16_t n) noexcept
     if(extended_>std::numeric_limits<std::uint64_t>::max()-delta)return {};
     extended_+=delta;previous_=n;return {extended_,true,false,static_cast<std::uint32_t>(delta-1)};
 }
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

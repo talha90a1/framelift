@@ -14,7 +14,7 @@ In scope:
 
 - Handling of pairing data: the Remote Play registration key, the morning key and the PSN account ID, how they are stored on disk, and anything that could expose them.
 - The PlayStation sign-in flow in the app, including how the authorization code and token are handled.
-- Parsing of network data from the console or the local network: discovery replies, registration responses, and the Takion stream (video, audio, controller feedback, haptics), in chiaki-ng, in the patches in `scripts/patches/`, and in the Veyra core in `Sources/VeyraCore/`.
+- Parsing of network data from the console or the local network: discovery replies, registration responses, and the Takion stream (video, audio, controller feedback, haptics), in chiaki-ng, in the patches in `scripts/patches/`, and in the Framelift core in `Sources/FrameliftCore/`.
 - Log redaction: any way for keys, credentials or personal data to reach the debug logs or the Export Logs zip.
 - Memory safety bugs in the C and C++ code that a device on the local network could trigger.
 

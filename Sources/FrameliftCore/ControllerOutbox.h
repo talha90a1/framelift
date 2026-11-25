@@ -14,10 +14,10 @@
 // state, as upstream. The app sends a keepalive state every 5 ms, so this only happens when the app
 // stops sending. The owner only takes while states wait, so an idle queue never turns neutral.
 #pragma once
-#include "veyra/remoteplay/ControllerQueue.h"
+#include "framelift/remoteplay/ControllerQueue.h"
 #include <vector>
 
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 class ControllerOutbox {
 public:
     // False when the state made the queue overflow (fail-safe neutral queued first).
@@ -42,4 +42,4 @@ private:
     ControllerQueue queue_;
     std::uint64_t lastQueuedMotionUs_ = 0;
 };
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

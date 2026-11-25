@@ -12,12 +12,12 @@
 //  - Trigger travel is cut in four parts (released, light, half, full) so a short full pull is not
 //    delivered as its last faint value.
 #pragma once
-#include "veyra/remoteplay/Types.h"
+#include "framelift/remoteplay/Types.h"
 #include <algorithm>
 #include <cstdint>
 #include <deque>
 #include <utility>
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 class ControllerQueue {
 public:
     static constexpr HostTime kFresh100ns = 1000000;   // 100 ms
@@ -93,4 +93,4 @@ private:
     HostTime stamp_ = 0;
     Stats stats_{};
 };
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

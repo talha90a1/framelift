@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
-#include "veyra/remoteplay/VideoIngress.h"
+#include "framelift/remoteplay/VideoIngress.h"
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 void QueueLimits::validate() const {
     if(maxFrames<1||maxFrames>64||maxBytes<1024||maxBytes>64u*1024u*1024u ||
        maxConfigBytes<1||maxConfigBytes>maxBytes||maxConfigBytes>1024u*1024u ||
@@ -124,4 +124,4 @@ std::optional<PcmBlock> AudioIngress::tryPop(){
 }
 void AudioIngress::close(){std::lock_guard lock(mutex_);closed_=true;queue_.clear();frames_=0;stats_.bufferedMs=0;}
 AudioQueueStats AudioIngress::stats()const{std::lock_guard lock(mutex_);return stats_;}
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

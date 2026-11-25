@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Link + init smoke test for VeyraCore: vr_init() then a 2 s LAN discovery.
+// Link + init smoke test for FrameliftCore: vr_init() then a 2 s LAN discovery.
 // Build: see Tests/core_smoke.sh
-#include "VeyraBridge.h"
+#include "FrameliftBridge.h"
 #include <stdio.h>
 #include <arpa/inet.h>
 #include <chiaki/remote/holepunch.h>

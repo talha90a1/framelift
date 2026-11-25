@@ -3,8 +3,8 @@
 // AudioIngress, SessionInbox token/lifecycle ordering, and the log redactor.
 // Built by Tests/core_fuzz.sh with Homebrew LLVM (-fsanitize=fuzzer,address,undefined).
 #include "LogRedaction.h"
-#include "veyra/remoteplay/SessionInbox.h"
-#include "veyra/remoteplay/VideoIngress.h"
+#include "framelift/remoteplay/SessionInbox.h"
+#include "framelift/remoteplay/VideoIngress.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -13,7 +13,7 @@
 #include <string_view>
 #include <vector>
 
-using namespace veyra::remoteplay;
+using namespace framelift::remoteplay;
 
 namespace {
 #define CHECK(cond)                                                                       \

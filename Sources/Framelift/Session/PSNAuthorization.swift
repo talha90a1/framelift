@@ -2,7 +2,7 @@
 import Combine
 import Foundation
 import Security
-import VeyraCore
+import FrameliftCore
 
 struct PSNAuthorization: Sendable, Equatable, Codable, CustomStringConvertible, CustomDebugStringConvertible {
     var accessToken: String

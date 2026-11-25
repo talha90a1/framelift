@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// One PS5 Remote Play session over the VeyraCore bridge (Veyra's ChiakiBackend on chiaki-ng).
+// One PS5 Remote Play session over the FrameliftCore bridge (Veyra's ChiakiBackend on chiaki-ng).
 import Foundation
-import VeyraCore
+import FrameliftCore
 
 struct RemotePlaySessionError: LocalizedError {
     var code: Int32

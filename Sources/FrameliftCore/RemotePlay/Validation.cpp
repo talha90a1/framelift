@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-#include "veyra/remoteplay/Types.h"
+#include "framelift/remoteplay/Types.h"
 #include <algorithm>
 #include <chrono>
 #include <limits>
 #include <stdexcept>
 
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 HostTime monotonic100ns() noexcept {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count()/100;
@@ -56,4 +56,4 @@ bool PcmBlock::valid() const noexcept {
     return generation>0 && (channels==1||channels==2) && rate>=8000 && rate<=192000 &&
         !samples.empty() && samples.size()%channels==0 && frames()<=rate/5u; // <=200 ms/block
 }
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

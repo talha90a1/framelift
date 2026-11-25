@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #pragma once
-#include "veyra/remoteplay/SessionInbox.h"
+#include "framelift/remoteplay/SessionInbox.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -24,9 +24,9 @@ struct VideoDeliveryWake {
 
 class VideoDeliveryWorker {
 public:
-    using Deliver = std::function<void(veyra::remoteplay::QueuedVideo)>;
+    using Deliver = std::function<void(framelift::remoteplay::QueuedVideo)>;
 
-    VideoDeliveryWorker(veyra::remoteplay::SessionInbox& inbox, VideoDeliveryWake& wake, Deliver deliver)
+    VideoDeliveryWorker(framelift::remoteplay::SessionInbox& inbox, VideoDeliveryWake& wake, Deliver deliver)
         : inbox_(inbox), wake_(wake), deliver_(std::move(deliver)),
           thread_([this](std::stop_token stop) { run(stop); }) {}
 
@@ -54,7 +54,7 @@ private:
                     wake_.pending = false;
                 }
                 while (!stop.stop_requested()) {
-                    auto unit = inbox_.tryVideo(veyra::remoteplay::monotonic100ns());
+                    auto unit = inbox_.tryVideo(framelift::remoteplay::monotonic100ns());
                     if (!unit || stop.stop_requested()) break;
                     deliver_(std::move(*unit));
                 }
@@ -62,7 +62,7 @@ private:
         } catch (...) { failed_.store(true, std::memory_order_release); }
     }
 
-    veyra::remoteplay::SessionInbox& inbox_;
+    framelift::remoteplay::SessionInbox& inbox_;
     VideoDeliveryWake& wake_;
     Deliver deliver_;
     std::atomic<bool> failed_{false};

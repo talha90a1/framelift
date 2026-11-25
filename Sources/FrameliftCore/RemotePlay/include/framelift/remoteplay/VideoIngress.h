@@ -5,7 +5,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 struct QueueLimits {
     std::size_t maxFrames=4, maxBytes=8u*1024u*1024u, maxConfigBytes=64u*1024u;
     HostTime maxAge100ns=1000000; // 100 ms safety ceiling, not target latency.
@@ -63,4 +63,4 @@ private:
     Generation generation_=0;std::uint32_t rate_=0,channels_=0,maxMs_;std::size_t frames_=0;
     std::uint64_t nextSample_=0;bool closed_=true,gap_=false;AudioQueueStats stats_{};
 };
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

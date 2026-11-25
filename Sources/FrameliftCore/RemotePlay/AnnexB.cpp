@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
-#include "veyra/remoteplay/Types.h"
-namespace veyra::remoteplay {
+#include "framelift/remoteplay/Types.h"
+namespace framelift::remoteplay {
 NalInfo inspectAnnexB(std::span<const std::uint8_t> b,Codec codec) noexcept {
     NalInfo out; if(codec!=Codec::H264 && codec!=Codec::H265 && codec!=Codec::H265Hdr)return out;
     std::size_t pos=0;bool any=false;
@@ -26,4 +26,4 @@ NalInfo inspectAnnexB(std::span<const std::uint8_t> b,Codec codec) noexcept {
     }
     out.valid=any;return out;
 }
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

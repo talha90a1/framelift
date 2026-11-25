@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import Foundation
 import Testing
-import VeyraCore
+import FrameliftCore
 @testable import Framelift
 
 @Suite(.serialized) struct LiveNetworkHarness {

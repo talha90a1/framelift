@@ -7,7 +7,7 @@
 #include <stop_token>
 #include <string>
 
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 // No serialization/ostream support: never put registration/session keys into
 // command lines, logs, fixtures or source control.
 struct PairingCredentials {
@@ -95,4 +95,4 @@ struct PairResult {
 // Cancellation stops the upstream registration and joins before returning.
 PairResult pairLocalPs5(std::string host,const AccountId&,std::string_view eightDigitPin,
     std::stop_token stop={},std::chrono::milliseconds timeout=std::chrono::seconds(30));
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

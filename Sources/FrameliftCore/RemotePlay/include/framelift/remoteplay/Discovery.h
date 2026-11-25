@@ -3,7 +3,7 @@
 #include "ChiakiBackend.h"
 #include <chrono>
 #include <vector>
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 // Framelift: name/isPs5 added (PS4 hosts are only returned when includePs4 is set).
 struct DiscoveredConsole {std::string host;bool standby=false;std::string consoleId;std::string name;bool isPs5=true;};
 struct DiscoveryReport {

@@ -2,7 +2,7 @@
 // Core (Veyra C++ + chiaki-ng) visibility: redacted chiaki log forwarding and the per-second
 // "core ..." line written to Diagnostics.shared while a session streams.
 import Foundation
-import VeyraCore
+import FrameliftCore
 
 enum CoreDiagnostics {
     /// Forwards redacted chiaki log lines (the core drops anything that could carry keys) into

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
-#include "veyra/remoteplay/SessionInbox.h"
+#include "framelift/remoteplay/SessionInbox.h"
 #include <limits>
 #include <algorithm>
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 struct SessionInbox::Shared {
     explicit Shared(QueueLimits limits):video(limits){}
     mutable std::mutex mutex;Generation generation=0;SessionState state=SessionState::Idle;
@@ -90,4 +90,4 @@ void SessionInbox::setWakeHook(WakeHook hook,void* user){
     s.wakeHook=hook;s.wakeUser=user;
 }
 SessionInbox::Status SessionInbox::status()const{auto& s=*shared_;std::lock_guard l(s.mutex);return {s.state,s.error,s.loginPinRequests};}
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

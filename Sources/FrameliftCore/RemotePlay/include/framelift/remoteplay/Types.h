@@ -9,7 +9,7 @@
 #include <string_view>
 #include <vector>
 
-namespace veyra::remoteplay {
+namespace framelift::remoteplay {
 using HostTime = std::int64_t; // Local steady-clock, 100 ns. NEVER PS5 render time.
 using Generation = std::uint64_t;
 HostTime monotonic100ns() noexcept;
@@ -105,4 +105,4 @@ struct ControllerState {
     std::array<MotionSample,16> motionSamples{};uint8_t motionSampleCount=0;
     bool operator==(const ControllerState&) const = default;
 };
-} // namespace veyra::remoteplay
+} // namespace framelift::remoteplay

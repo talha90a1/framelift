@@ -12,10 +12,10 @@ esac
 OUT="build/video_delivery_$MODE"
 mkdir -p "$OUT"
 xcrun clang++ -std=c++20 -g -O1 -fno-omit-frame-pointer $SAN \
-    -ISources/VeyraCore -ISources/VeyraCore/veyra/include \
-    Tests/video_delivery_test.cpp Sources/VeyraCore/veyra/SessionInbox.cpp \
-    Sources/VeyraCore/veyra/VideoIngress.cpp Sources/VeyraCore/veyra/AnnexB.cpp \
-    Sources/VeyraCore/veyra/Timeline.cpp Sources/VeyraCore/veyra/Validation.cpp \
+    -ISources/FrameliftCore -ISources/FrameliftCore/RemotePlay/include \
+    Tests/video_delivery_test.cpp Sources/FrameliftCore/RemotePlay/SessionInbox.cpp \
+    Sources/FrameliftCore/RemotePlay/VideoIngress.cpp Sources/FrameliftCore/RemotePlay/AnnexB.cpp \
+    Sources/FrameliftCore/RemotePlay/Timeline.cpp Sources/FrameliftCore/RemotePlay/Validation.cpp \
     -o "$OUT/video_delivery_test"
 export ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1}
 export UBSAN_OPTIONS=${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=1}

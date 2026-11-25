@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Helpers for the fixed-size C arrays in VeyraBridge.h (imported as tuples) and for blocking bridge calls.
+// Helpers for the fixed-size C arrays in FrameliftBridge.h (imported as tuples) and for blocking bridge calls.
 import Foundation
-import VeyraCore
+import FrameliftCore
 
 enum BridgeInterop {
     /// Process-wide chiaki init (idempotent in the core).

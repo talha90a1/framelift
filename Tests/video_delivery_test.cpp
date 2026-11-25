@@ -9,7 +9,7 @@
 #include <thread>
 #include <vector>
 
-using namespace veyra::remoteplay;
+using namespace framelift::remoteplay;
 using namespace std::chrono_literals;
 
 #define CHECK(value) do { if (!(value)) { std::fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #value); std::abort(); } } while (0)

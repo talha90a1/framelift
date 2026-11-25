@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // LAN discovery (directed broadcasts on every active IPv4 interface) and wake from rest mode.
 import Foundation
-import VeyraCore
+import FrameliftCore
 
 enum ConsoleDiscovery {
     /// Blocks a GCD worker for `timeout`; returns PS5 and PS4 hosts (check `isPS5`). Empty on error.
