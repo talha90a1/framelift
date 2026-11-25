@@ -16,6 +16,7 @@
   <img alt="macOS 26 or later" src="https://img.shields.io/badge/macOS-26%2B-1b1b20?style=flat-square">
   <img alt="Apple Silicon" src="https://img.shields.io/badge/Apple%20Silicon-M1%20or%20newer-1b1b20?style=flat-square">
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-1b1b20?style=flat-square"></a>
+  <a href="../../releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/talha90a1/framelift/total?style=flat-square&label=downloads&color=3fb950"></a>
 </p>
 
 ## What you get
