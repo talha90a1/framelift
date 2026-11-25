@@ -42,7 +42,7 @@ Use **Framelift › Check for Updates…** to check now. Manage automatic checks
 
 ## Network
 
-Connect the Mac and PS5 to the same local network. Wi-Fi, Ethernet, and a mix of the two all work.
+Pair the Mac and PS5 on the same local network first. Wi-Fi, Ethernet, and a mix of the two all work. After pairing, use **Connect › Over Internet…** to play from another network.
 
 For a direct cable from the PS5 to the Mac, use **System Settings › General › Sharing › Internet Sharing** to share the Mac’s connection over Ethernet. A MacBook may need a USB-C Ethernet adapter.
 
@@ -64,7 +64,7 @@ Tested on a MacBook Air with M4 and a 120 Hz display: a generated frame takes ab
 
 ## Limits
 
-- Local network only.
+- Initial pairing requires the same local network.
 - SDR only; HDR is not supported.
 - Generated frames can show artifacts around moving objects.
 - Output is up to 60 fps.
