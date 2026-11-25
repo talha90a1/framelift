@@ -1,0 +1,51 @@
+--- a/lib/src/remote/holepunch.c
++++ b/lib/src/remote/holepunch.c
+@@ -751,7 +751,7 @@
+ CHIAKI_EXPORT Session* chiaki_holepunch_session_init(
+     const char* psn_oauth2_token, ChiakiLog *log)
+ {
+-    Session *session = malloc(sizeof(Session));
++    Session *session = calloc(1, sizeof(Session));
+     if(!session)
+         return NULL;
+     make_oauth2_header(&session->oauth_header, psn_oauth2_token);
+@@ -763,6 +763,7 @@
+     session->ws_notification_queue = createNq();
+     if(!session->ws_notification_queue)
+     {
++        free(session->oauth_header);
+         free(session);
+         return NULL;
+     }
+@@ -1897,7 +1898,11 @@
+         chiaki_mutex_lock(&session->notif_mutex);
+         notification_queue_free(session->ws_notification_queue);
+         chiaki_mutex_unlock(&session->notif_mutex);
+-    }
++        free(session->ws_notification_queue);
++    }
++    free(session->local_candidates);
++    if(session->our_offer_msg)
++        session_message_free(session->our_offer_msg);
+     for(int i=0; i < session->num_stun_servers; i++)
+     {
+         free(session->stun_server_list[i].host);
+@@ -1906,12 +1911,18 @@
+     {
+         free(session->stun_server_list_ipv6[i].host);
+     }
++    if(!CHIAKI_SOCKET_IS_INVALID(session->ipv4_sock))
++        CHIAKI_SOCKET_CLOSE(session->ipv4_sock);
++    if(!CHIAKI_SOCKET_IS_INVALID(session->ipv6_sock))
++        CHIAKI_SOCKET_CLOSE(session->ipv6_sock);
+     chiaki_stop_pipe_fini(&session->select_pipe);
+     chiaki_stop_pipe_fini(&session->notif_pipe);
+     chiaki_mutex_fini(&session->notif_mutex);
+     chiaki_cond_fini(&session->notif_cond);
+     chiaki_mutex_fini(&session->state_mutex);
+     chiaki_cond_fini(&session->state_cond);
++    chiaki_mutex_fini(&session->stop_mutex);
++    free(session);
+ }
+ 
+ CHIAKI_EXPORT void chiaki_holepunch_main_thread_cancel(Session *session, bool stop_thread)

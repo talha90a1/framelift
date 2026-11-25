@@ -10,7 +10,7 @@ enum StreamPreset: String, CaseIterable, Identifiable {
     var width: UInt32 { is1080 ? 1920 : 1280 }
     var height: UInt32 { is1080 ? 1080 : 720 }
     var fps: UInt32 { self == .p720fps30 || self == .p1080fps30 ? 30 : 60 }
-    var title: String { "\(height)p · \(fps) fps" }
+    var title: String { "\(height)p · \(fps == 30 ? "30 → 60" : "60") fps" }
 
     private var is1080: Bool { self == .p1080fps30 || self == .p1080fps60 }
 
@@ -67,6 +67,9 @@ struct SettingsStore {
     /// Clamps stored values to what the app offers: a PS5 preset, a bitrate and a sharpness in range.
     static func sanitized(_ settings: StreamSettings) -> StreamSettings {
         var result = settings
+        result.keepLLFIWarm = true
+        result.keepStaticOverlays = false
+        result.blendFallback = false
         if StreamPreset(settings: result) == nil { StreamPreset.p1080fps30.apply(to: &result) }
         let range = StreamSettingsLimits.bitrateRangeKbps
         result.bitrateKbps = min(max(result.bitrateKbps, range.lowerBound), range.upperBound)
@@ -74,6 +77,7 @@ struct SettingsStore {
         result.sharpness =
             result.sharpness.isFinite
             ? min(max(result.sharpness, sharp.lowerBound), sharp.upperBound) : StreamSettingsLimits.defaultSharpness
+        result.audioOffsetMs = result.audioOffsetMs.isFinite ? min(250, max(-250, result.audioOffsetMs)) : 0
         return result
     }
 

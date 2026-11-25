@@ -5,8 +5,8 @@ import CoreVideo
 import Foundation
 import VideoToolbox
 
-struct InterpolationResult {
-    /// The generated mid frame (t = 0.5) as an 8-bit 420v IOSurface buffer; empty on failure.
+struct InterpolationResult: @unchecked Sendable {
+    /// The generated mid frame (t = 0.5), retaining the input bit depth; empty on failure.
     var frames: [CVPixelBuffer]
     /// Wall time from the call to the completion, ms.
     var wallMs: Double
@@ -168,7 +168,7 @@ final class AppleLLFIInterpolator: @unchecked Sendable {
         let now = HostClock.seconds(HostClock.now())
         lock.lock()
         let nextDue = lastRequest + requestInterval
-        guard session === primary, requestInterval > 0, now + warmDuration + 0.002 < nextDue,
+        guard session === primary, !primary.busy, requestInterval > 0, now + warmDuration + 0.002 < nextDue,
             let warmSession, !warmSession.busy,
             let (params, _) = warmSession.makeParameters(previous: previous, current: current)
         else {

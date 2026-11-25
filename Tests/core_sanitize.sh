@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds VeyraCore + loopback session test + inbox stress under a sanitizer and runs both.
+# Builds FrameliftCore + loopback session test + inbox stress under a sanitizer and runs both.
 # Usage: Tests/core_sanitize.sh asan|tsan [stress_seconds] [session_cycles]
 set -eu
 cd "$(dirname "$0")/.."
@@ -11,15 +11,15 @@ case "$MODE" in
   *) echo "mode must be asan or tsan" >&2; exit 2 ;;
 esac
 OUT=build/core_$MODE; mkdir -p "$OUT"
-INC="-ISources/VeyraCore -ISources/VeyraCore/include -ISources/VeyraCore/veyra/include -Ibuild/chiaki-dist/include -I/opt/homebrew/opt/openssl@3/include"
+INC="-ISources/FrameliftCore -ISources/FrameliftCore/include -ISources/FrameliftCore/RemotePlay/include -Ibuild/chiaki-dist/include -I/opt/homebrew/opt/openssl@3/include"
 CXX="xcrun clang++ -std=c++20 -g -O1 -fno-omit-frame-pointer $SAN $INC"
 OBJS=""
-for src in Sources/VeyraCore/*.cpp Sources/VeyraCore/veyra/*.cpp; do
+for src in Sources/FrameliftCore/*.cpp Sources/FrameliftCore/RemotePlay/*.cpp; do
   obj="$OUT/$(basename "$src" .cpp).o"; $CXX -c "$src" -o "$obj"; OBJS="$OBJS $obj"
 done
 L=build/chiaki-dist/lib
 LIBS="$L/libchiaki.a $L/libcurl.a $L/libprotobuf-nanopb.a $L/libjerasure.a $L/libgf_complete.a $L/libopus.a $L/libjson-c.a $L/libminiupnpc.a $L/libevent.a $L/libevent_pthreads.a $L/libssl.a $L/libcrypto.a -framework CoreServices -framework SystemConfiguration -framework Security -lz"
-xcrun clang -g -O1 $SAN -ISources/VeyraCore/include -c Tests/core_session_test.c -o "$OUT/core_session_test.o"
+xcrun clang -g -O1 $SAN -ISources/FrameliftCore/include -c Tests/core_session_test.c -o "$OUT/core_session_test.o"
 $CXX "$OUT/core_session_test.o" $OBJS $LIBS -o "$OUT/core_session_test" 2>&1 | grep -v "ld: warning" || true
 $CXX Tests/core_stress.cpp $(echo $OBJS | tr ' ' '\n' | grep -v Bridge.o | tr '\n' ' ') $LIBS -o "$OUT/core_stress" 2>&1 | grep -v "ld: warning" || true
 export ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1}

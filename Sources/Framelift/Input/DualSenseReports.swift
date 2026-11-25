@@ -68,14 +68,27 @@ enum DualSenseReports {
         return c
     }
 
-    /// Full actuator power, haptics low-pass on, no power save or mute. Sent once before haptics
+    /// Console actuator intensity, haptics low-pass on, no power save or mute.
     /// (P5M `potenciaCheia`). valid0 stays 0: the rumble emulation bits take the actuators out of
     /// audio mode.
-    static func powerSetupBlock() -> [UInt8] {
+    static func powerSetupBlock(haptic: ControllerEffectIntensity = .strong,
+                                trigger: ControllerEffectIntensity = .strong) -> [UInt8] {
         var c = [UInt8](repeating: 0, count: commonSize)
         c[Common.valid1] = Valid1.powerSave | Valid1.lowPass | Valid1.motorPower
         c[Common.powerSave] = 0
-        c[Common.motorPower] = 0
+        let hapticReduction: UInt8 = switch haptic {
+        case .off: 0x0F
+        case .strong: 0
+        case .medium: 0x02
+        case .weak: 0x03
+        }
+        let triggerReduction: UInt8 = switch trigger {
+        case .off: 0xF0
+        case .strong: 0
+        case .medium: 0x60
+        case .weak: 0x90
+        }
+        c[Common.motorPower] = hapticReduction | triggerReduction
         c[Common.lowPass] = 0x01
         return c
     }

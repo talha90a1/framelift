@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// "Sign in with PlayStation": fetches the PSN account id needed for pairing (same flow as chiaki-ng).
-// Only the Base64 8-byte little-endian account id is kept; the token is discarded.
+// Sony sign-in for local pairing and optional internet Remote Play.
 import AppKit
 import Combine
 import SwiftUI
@@ -12,6 +11,14 @@ enum PSNSignIn {
     private static let clientSecret = "mvaiZkRsAsI1IBkY"
     private static let redirect = "https://remoteplay.dl.playstation.net/remoteplay/redirect"
     private static let tokenURL = URL(string: "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token")!
+    static let scope = "psn:clientapp referenceDataService:countryConfig.read pushNotification:webSocket.desktop.connect sessionManager:remotePlaySession.system.update"
+    static let clientDeviceID: String = {
+        let key = "framelift.psnClientDeviceID"
+        if let saved = UserDefaults.standard.string(forKey: key), saved.count == 48, saved.allSatisfy({ $0.isASCII && $0.isHexDigit }) { return saved }
+        let generated = "0000000700410080" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        UserDefaults.standard.set(generated, forKey: key)
+        return generated
+    }()
 
     static let loginURL: URL = {
         var c = URLComponents(string: "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize")!
@@ -20,7 +27,8 @@ enum PSNSignIn {
             .init(name: "response_type", value: "code"),
             .init(name: "client_id", value: clientID),
             .init(name: "redirect_uri", value: redirect),
-            .init(name: "scope", value: "psn:clientapp"),
+            .init(name: "scope", value: scope),
+            .init(name: "duid", value: clientDeviceID),
             .init(name: "request_locale", value: "en_US"),
             .init(name: "ui", value: "pr"),
             .init(name: "service_logo", value: "ps"),
@@ -33,24 +41,34 @@ enum PSNSignIn {
     }()
 
     enum Failure: LocalizedError {
-        case noCode, http(Int), badResponse
+        case noCode, http(Int), badResponse, signInRequired, differentAccount
         var errorDescription: String? {
             switch self {
             case .noCode: "Sign-in did not return a code. Try again."
             case let .http(code): "Sony's server answered with error \(code). Please try again."
-            case .badResponse: "Sony's answer didn't contain an account id."
+            case .badResponse: "Sony's answer did not contain valid sign-in details."
+            case .signInRequired: "Sign in with PlayStation in Settings › Stream › Internet Play."
+            case .differentAccount: "Sign in with the same PlayStation account used to pair this PS5."
             }
         }
     }
 
     /// The one-time code if `url` is the Remote Play redirect, else nil.
     static func code(fromRedirect url: URL) -> String? {
-        guard url.host == "remoteplay.dl.playstation.net", url.path.hasPrefix("/remoteplay/redirect") else { return nil }
-        return URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "code" }?.value
+        guard url.scheme == "https", url.host == "remoteplay.dl.playstation.net",
+              url.path == "/remoteplay/redirect", url.user == nil, url.password == nil,
+              url.port == nil || url.port == 443,
+              let code = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "code" })?.value,
+              !code.isEmpty else { return nil }
+        return code
     }
 
     /// Exchanges the redirect code for the account id (Base64 of the 8-byte little-endian user id).
-    struct Account { let accountIDBase64: String; let onlineID: String? }
+    struct Account {
+        let accountIDBase64: String
+        let onlineID: String?
+        var authorization: PSNAuthorization? = nil
+    }
 
     static func accountID(code: String) async throws -> Account {
         let auth = "Basic " + Data("\(clientID):\(clientSecret)".utf8).base64EncodedString()
@@ -62,17 +80,20 @@ enum PSNSignIn {
         // would otherwise arrive as a space).
         let safe = CharacterSet.alphanumerics.union(.init(charactersIn: "-._~"))
         func enc(_ v: String) -> String { v.addingPercentEncoding(withAllowedCharacters: safe) ?? v }
-        req.httpBody = Data("grant_type=authorization_code&code=\(enc(code))&redirect_uri=\(enc(redirect))".utf8)
+        req.httpBody = Data("grant_type=authorization_code&code=\(enc(code))&redirect_uri=\(enc(redirect))&scope=\(enc(scope))".utf8)
+        req.timeoutInterval = 30
         let session = URLSession(configuration: .ephemeral)
         let (tokenData, tokenResp) = try await session.data(for: req)
         try check(tokenResp)
-        guard let token = (try JSONSerialization.jsonObject(with: tokenData) as? [String: Any])?["access_token"] as? String,
+        guard let tokens = try JSONSerialization.jsonObject(with: tokenData) as? [String: Any],
+            let token = tokens["access_token"] as? String,
             let escaped = token.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(.init(charactersIn: "-._~"))),
             let infoURL = URL(string: tokenURL.absoluteString + "/" + escaped)
         else { throw Failure.badResponse }
 
         // GET <token endpoint>/<quoted token>, built as a string so the token is escaped exactly once.
         var info = URLRequest(url: infoURL)
+        info.timeoutInterval = 30
         info.setValue(auth, forHTTPHeaderField: "Authorization")
         let (infoData, infoResp) = try await session.data(for: info)
         try check(infoResp)
@@ -80,9 +101,36 @@ enum PSNSignIn {
         let raw = json?["user_id"]
         guard let userID = (raw as? String).flatMap(UInt64.init) ?? (raw as? NSNumber)?.uint64Value else { throw Failure.badResponse }
         var le = userID.littleEndian
-        return Account(
-            accountIDBase64: Data(bytes: &le, count: 8).base64EncodedString(),
-            onlineID: json?["online_id"] as? String)
+        let accountID = Data(bytes: &le, count: 8).base64EncodedString()
+        let onlineID = json?["online_id"] as? String
+        let authorization = try parseAuthorization(tokens, accountID: accountID, onlineID: onlineID)
+        return Account(accountIDBase64: accountID, onlineID: onlineID, authorization: authorization)
+    }
+
+    static func parseAuthorization(_ json: [String: Any], accountID: String, onlineID: String?, now: Date = Date()) throws -> PSNAuthorization {
+        guard let access = json["access_token"] as? String, !access.isEmpty,
+              let refresh = json["refresh_token"] as? String, !refresh.isEmpty,
+              let expires = json["expires_in"] as? NSNumber, expires.doubleValue.isFinite,
+              expires.doubleValue > 0, expires.doubleValue < 31_536_000 else { throw Failure.badResponse }
+        return PSNAuthorization(accessToken: access, refreshToken: refresh,
+            expiresAt: now.addingTimeInterval(expires.doubleValue), accountIDBase64: accountID, onlineID: onlineID)
+    }
+
+    static func refresh(_ current: PSNAuthorization) async throws -> PSNAuthorization {
+        var request = URLRequest(url: tokenURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("Basic " + Data("\(clientID):\(clientSecret)".utf8).base64EncodedString(), forHTTPHeaderField: "Authorization")
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let safe = CharacterSet.alphanumerics.union(.init(charactersIn: "-._~"))
+        let encoded = current.refreshToken.addingPercentEncoding(withAllowedCharacters: safe) ?? ""
+        request.httpBody = Data("grant_type=refresh_token&refresh_token=\(encoded)".utf8)
+        let session = URLSession(configuration: .ephemeral)
+        let (data, response) = try await session.data(for: request)
+        try check(response)
+        guard var json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Failure.badResponse }
+        if json["refresh_token"] == nil { json["refresh_token"] = current.refreshToken }
+        return try parseAuthorization(json, accountID: current.accountIDBase64, onlineID: current.onlineID)
     }
 
     private static func check(_ response: URLResponse) throws {
@@ -182,6 +230,7 @@ struct PSNSignInSheet: View {
     @State private var embedded = false
     @State private var working = false
     @State private var watcher: BrowserSignInWatcher?
+    @State private var authorizationTask: Task<Void, Never>?
     @State private var lastPasteboardChange = NSPasteboard.general.changeCount
     private let clipboardPoll = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
 
@@ -213,7 +262,7 @@ struct PSNSignInSheet: View {
         }
         .frame(width: embedded ? 560 : 480, height: embedded ? 720 : 300)
         .onAppear { openBrowser() }
-        .onDisappear { watcher?.stop() }
+        .onDisappear { watcher?.stop(); authorizationTask?.cancel() }
         .onReceive(clipboardPoll) { _ in if !embedded { checkClipboard() } }
     }
 
@@ -222,7 +271,7 @@ struct PSNSignInSheet: View {
             if working || !failed { ProgressView().controlSize(.large) }
             Text(status ?? "Continue in \(watcher?.displayName ?? "your browser")").font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                 .foregroundStyle(failed ? Color.red : Color.primary)
-            Button("Reopen Sign-In Page") { openBrowser() }
+            Button("Reopen Sign-In Page") { openBrowser() }.disabled(working)
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -262,9 +311,10 @@ struct PSNSignInSheet: View {
         watcher?.stop()
         working = true; failed = false
         status = "Reading account ID…"
-        Task {
+        authorizationTask = Task {
             do {
                 let account = try await PSNSignIn.accountID(code: code)
+                try Task.checkCancellation()
                 onAccountID(account)
                 dismiss()
             } catch {

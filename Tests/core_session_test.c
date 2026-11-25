@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Loopback lifecycle test for the VeyraCore bridge, meant to run under ASan/UBSan and TSan
+// Loopback lifecycle test for the FrameliftCore bridge, meant to run under ASan/UBSan and TSan
 // (Tests/core_sanitize.sh). No PS5 is contacted: sessions target 127.0.0.1, where the session
 // request is refused, so this exercises start -> chiaki threads -> quit event -> stop/join while
 // other threads hammer the session API, plus log forwarding and diagnostics.
-#include "VeyraBridge.h"
+#include "FrameliftBridge.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>

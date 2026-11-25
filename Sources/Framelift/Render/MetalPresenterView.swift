@@ -212,6 +212,8 @@ final class MetalPresenterView: NSView {
         l.presentsWithTransaction = false
         l.displaySyncEnabled = true
         l.wantsExtendedDynamicRangeContent = false
+        l.preferredDynamicRange = .standard
+        l.toneMapMode = .never
         // Default mapping's space (sRGB) until the first frame's tags arrive; see ColourPipeline.swift.
         l.colorspace = LayerColourSpace.sRGB.makeColorSpace()
         l.backgroundColor = NSColor.black.cgColor
@@ -364,8 +366,6 @@ final class MetalPresenterView: NSView {
         let revision = requestedLayerRevision
         DispatchQueue.main.async { [weak self] in
             guard let self, let layer = self.metalLayer else { return }
-            layer.pixelFormat = wanted.isHDR ? .bgr10a2Unorm : .bgra8Unorm
-            layer.wantsExtendedDynamicRangeContent = wanted.isHDR
             layer.colorspace = wanted.makeColorSpace()
             self.stateLock.withLock { self.appliedLayerRevision = revision }
         }
@@ -384,7 +384,7 @@ final class MetalPresenterView: NSView {
         updateColour(tags, mode: mode)
         // Drop drawables from before the colour-space change, including any supplied by the display link.
         guard appliedRevision == requestedLayerRevision else { return false }
-        let format: MTLPixelFormat = requestedLayerSpace.isHDR ? .bgr10a2Unorm : .bgra8Unorm
+        let format: MTLPixelFormat = .bgra8Unorm
         let asked = CACurrentMediaTime()
         let next = given ?? metalLayer.nextDrawable()
         let waited = CACurrentMediaTime() - asked

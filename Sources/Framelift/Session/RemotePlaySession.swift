@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// One PS5 Remote Play session over the VeyraCore bridge (Veyra's ChiakiBackend on chiaki-ng).
+// One PS5 Remote Play session over the FrameliftCore bridge (Veyra's ChiakiBackend on chiaki-ng).
 import Foundation
-import VeyraCore
+import FrameliftCore
 
 struct RemotePlaySessionError: LocalizedError {
     var code: Int32
     var errorDescription: String? { SessionMessages.errorMessage(code: code) }
 }
 
+struct InternetConnection: CustomStringConvertible, CustomDebugStringConvertible {
+    var accessToken: String
+    var deviceID: Data
+    var description: String { "InternetConnection(<redacted>)" }
+    var debugDescription: String { description }
+}
+
 final class RemotePlaySession: ControllerSink {
-    /// Called on the core's session thread with each Annex-B access unit (or codec config).
+    /// Called on the core's video worker with each Annex-B access unit (or codec config).
     var onVideo: ((EncodedVideoUnit) -> Void)?
     /// Called on the core's session thread.
     var onAudio: ((PCMChunk) -> Void)?
@@ -21,6 +28,7 @@ final class RemotePlaySession: ControllerSink {
     private let host: String
     private let credentials: ConsoleCredentials
     private let settings: StreamSettings
+    private let internet: InternetConnection?
     private let lock = NSLock()
     private var handle: OpaquePointer?
     private var box: Unmanaged<CallbackBox>?
@@ -36,10 +44,11 @@ final class RemotePlaySession: ControllerSink {
         }
     }
 
-    init(host: String, credentials: ConsoleCredentials, settings: StreamSettings) {
+    init(host: String, credentials: ConsoleCredentials, settings: StreamSettings, internet: InternetConnection? = nil) {
         self.host = host
         self.credentials = credentials
         self.settings = settings
+        self.internet = internet
     }
 
     /// The last reference may drop inside a core callback (which holds a temporary strong ref);
@@ -72,14 +81,13 @@ final class RemotePlaySession: ControllerSink {
         profile.codec = switch settings.codec {
         case .h264: VR_CODEC_H264
         case .hevc: VR_CODEC_H265
-        case .hevcHDR: VR_CODEC_H265_HDR
         }
 
         let box = Unmanaged.passRetained(CallbackBox(session: self, codec: settings.codec))
         var callbacks = VRCallbacks()
         callbacks.user = box.toOpaque()
         callbacks.video = Self.videoCallback
-        callbacks.audio = Self.audioCallback
+        callbacks.audio_timed = Self.audioCallback
         callbacks.event = Self.eventCallback
         callbacks.triggers = Self.triggersCallback
         callbacks.haptics = Self.hapticsCallback
@@ -87,7 +95,19 @@ final class RemotePlaySession: ControllerSink {
         var cCredentials = BridgeInterop.credentials(credentials)
         defer { BridgeInterop.wipe(&cCredentials) }
         var error: Int32 = 0
-        guard let session = vr_session_start(host, &cCredentials, &profile, &callbacks, &error) else {
+        let started: OpaquePointer?
+        if let internet, internet.deviceID.count == 32 {
+            started = internet.deviceID.withUnsafeBytes { bytes in
+                vr_session_start_psn(internet.accessToken, bytes.bindMemory(to: UInt8.self).baseAddress,
+                                     &cCredentials, &profile, &callbacks, &error)
+            }
+        } else if internet != nil {
+            started = nil
+            error = -2001
+        } else {
+            started = vr_session_start(host, &cCredentials, &profile, &callbacks, &error)
+        }
+        guard let session = started else {
             box.release()
             throw RemotePlaySessionError(code: error != 0 ? error : -2002)
         }
@@ -202,12 +222,13 @@ final class RemotePlaySession: ControllerSink {
     }
 
     private static let audioCallback: @convention(c) (
-        UnsafeMutableRawPointer?, UnsafePointer<Int16>?, Int, UInt32, UInt32
-    ) -> Void = { user, pcm, frames, channels, rate in
+        UnsafeMutableRawPointer?, UnsafePointer<Int16>?, Int, UInt32, UInt32, UInt64, UInt64, Bool
+    ) -> Void = { user, pcm, frames, channels, rate, first, arrival, discontinuity in
         guard let (_, session) = session(user), let pcm, frames > 0, channels > 0,
               let onAudio = session.onAudio else { return }
         let samples = Array(UnsafeBufferPointer(start: pcm, count: frames * Int(channels)))
-        onAudio(PCMChunk(samples: samples, channels: channels, sampleRate: rate))
+        onAudio(PCMChunk(samples: samples, channels: channels, sampleRate: rate,
+                        firstSample: first, arrivalHostTime: arrival, discontinuity: discontinuity))
     }
 
     private static let eventCallback: @convention(c) (
@@ -216,18 +237,26 @@ final class RemotePlaySession: ControllerSink {
         guard let (_, session) = session(user) else { return }
         let event: SessionEvent
         switch type {
+        case VR_EVENT_CONNECTION_PROGRESS:
+            event = .connectionProgress(code)
         case VR_EVENT_RUMBLE:
             session.onFeedback?(.rumble(left: UInt8(clamping: a), right: UInt8(clamping: b)))
             return
         case VR_EVENT_MOTION_RESET:
             session.onFeedback?(.motionReset)
             return
+        case VR_EVENT_HAPTIC_INTENSITY:
+            if let intensity = ControllerEffectIntensity(rawValue: code) { session.onFeedback?(.hapticIntensity(intensity)) }
+            return
+        case VR_EVENT_TRIGGER_INTENSITY:
+            if let intensity = ControllerEffectIntensity(rawValue: code) { session.onFeedback?(.triggerIntensity(intensity)) }
+            return
         case VR_EVENT_CONNECTED:
             event = .connected
         case VR_EVENT_LOGIN_PIN_REQUEST:
             event = .loginPinRequired
         case VR_EVENT_QUIT:
-            event = .quit(reason: code, message: SessionMessages.quitMessage(reason: code))
+            event = .quit(reason: code, message: SessionMessages.quitMessage(reason: code, internet: session.internet != nil))
         case VR_EVENT_FAILED:
             event = .failed(code: code, message: SessionMessages.errorMessage(code: code))
         default:

@@ -24,6 +24,7 @@ struct PairedConsole: Codable, Identifiable, Hashable {
     var nickname: String
     var host: String
     var lastSettings: StreamSettings?
+    var psnDeviceID: String? = nil
 
     // StreamSettings is only Equatable (Contracts.swift), so hash the identifying fields;
     // equality stays synthesized over all fields, which keeps hashing consistent.
@@ -44,6 +45,7 @@ struct DiscoveredConsole: Identifiable, Hashable {
 }
 
 enum SessionEvent {
+    case connectionProgress(Int32)
     case connected
     case loginPinRequired
     case quit(reason: Int32, message: String)
@@ -52,11 +54,11 @@ enum SessionEvent {
 
 /// Readable text for chiaki quit reasons and bridge / Veyra / chiaki error codes.
 enum SessionMessages {
-    static func quitMessage(reason: Int32) -> String {
+    static func quitMessage(reason: Int32, internet: Bool = false) -> String {
         switch reason {
         case 0: "The session ended."
         case 1: "The stream was stopped."
-        case 2: "The session request didn’t complete. Check that the PS5 is on and connected to the same network."
+        case 2: internet ? "The session request did not complete. Check that the PS5 is online, then try connecting again." : "The session request didn’t complete. Check that the PS5 is on and connected to the same network."
         case 3: "The PS5 refused the connection. Check that Remote Play is enabled, or pair the console again."
         case 4: "Remote Play is already in use on another device."
         case 5: "Remote Play crashed on the PS5. Try again in a moment."
@@ -78,6 +80,8 @@ enum SessionMessages {
         case -2001: "Invalid connection settings."
         case -2002: "Internal error in the remote-play core."
         case -2003: "No active session."
+        case -2100: "Couldn't load your PS5 consoles from PlayStation. Sign in again, then retry."
+        case -2101: "Couldn't connect over the internet. Check that the PS5 is online and Remote Play is enabled. A different network may be needed if the router blocks the connection."
         // Veyra backend / ingress
         case -1001: "The video stream couldn't be buffered."
         case -1002: "The audio stream couldn't be buffered."

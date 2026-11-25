@@ -32,13 +32,21 @@ enum HostClock {
 // MARK: - Stream settings
 
 enum VideoCodecKind: Int, Codable, CaseIterable, Sendable {
-    case h264 = 0, hevc = 1, hevcHDR = 2
+    case h264 = 0, hevc = 1
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        switch try container.decode(Int.self) {
+        case 0: self = .h264
+        case 1, 2: self = .hevc // Legacy HDR preferences used 2.
+        default: throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unknown video codec")
+        }
+    }
 
     var label: String {
         switch self {
         case .h264: "H.264"
         case .hevc: "HEVC"
-        case .hevcHDR: "HEVC HDR"
         }
     }
 }
@@ -58,8 +66,8 @@ struct StreamSettings: Codable, Equatable, Sendable {
     var height: UInt32 = 1080
     /// Stream preset requested from the PS5. 30 for 30 fps games (no duplicate frames), interpolated to 60.
     var streamFPS: UInt32 = 30
-    var bitrateKbps: UInt32 = 30000
-    // HEVC: sharper at the same bitrate. HEVC HDR asks for HDR; the PS5 still sends SDR when the game or its output is SDR.
+    var bitrateKbps: UInt32 = 15000
+    // HEVC: sharper at the same bitrate.
     var codec: VideoCodecKind = .hevc
     /// CGDirectDisplayID of the screen to play on (TV over HDMI or built-in). nil = screen of the main window.
     var targetDisplayID: UInt32?
@@ -70,6 +78,8 @@ struct StreamSettings: Codable, Equatable, Sendable {
     var showOverlay: Bool = false
     /// Sampled at stream start.
     var keepLLFIWarm: Bool = true
+    var protectSubtitles: Bool = true
+    var audioOffsetMs: Double = 0
     /// Copy pixels that don't move between the real frames (subtitles, HUD) into the generated frame.
     var keepStaticOverlays: Bool = false
     /// 50/50 blend shown when Apple's frame misses its deadline; off repeats the real frame instead.
@@ -80,6 +90,7 @@ struct StreamSettings: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case width, height, streamFPS, bitrateKbps, codec, targetDisplayID, fullscreen, sceneCutFallback
         case showOverlay, keepLLFIWarm, keepStaticOverlays, blendFallback, sharpness, upscaler
+        case protectSubtitles, audioOffsetMs
     }
 }
 
@@ -98,6 +109,8 @@ extension StreamSettings {
         sceneCutFallback = try c.decodeIfPresent(Bool.self, forKey: .sceneCutFallback) ?? sceneCutFallback
         showOverlay = try c.decodeIfPresent(Bool.self, forKey: .showOverlay) ?? showOverlay
         keepLLFIWarm = try c.decodeIfPresent(Bool.self, forKey: .keepLLFIWarm) ?? keepLLFIWarm
+        protectSubtitles = try c.decodeIfPresent(Bool.self, forKey: .protectSubtitles) ?? protectSubtitles
+        audioOffsetMs = try c.decodeIfPresent(Double.self, forKey: .audioOffsetMs) ?? audioOffsetMs
         keepStaticOverlays = try c.decodeIfPresent(Bool.self, forKey: .keepStaticOverlays) ?? keepStaticOverlays
         blendFallback = try c.decodeIfPresent(Bool.self, forKey: .blendFallback) ?? blendFallback
         sharpness = try c.decodeIfPresent(Double.self, forKey: .sharpness) ?? sharpness
@@ -122,6 +135,9 @@ struct PCMChunk: Sendable {
     var samples: [Int16]
     var channels: UInt32
     var sampleRate: UInt32
+    var firstSample: UInt64 = 0
+    var arrivalHostTime: UInt64 = 0
+    var discontinuity: Bool = false
 }
 
 struct DecodedFrame: @unchecked Sendable {
@@ -179,12 +195,27 @@ protocol ControllerSink: AnyObject {
     func send(_ state: ControllerSnapshot)
 }
 
+enum ControllerEffectIntensity: Int32, Sendable {
+    case off = 0, strong = 1, medium = 2, weak = 3
+
+    var scale: Float {
+        switch self {
+        case .off: 0
+        case .strong: 1
+        case .medium: 0.5
+        case .weak: 0.33
+        }
+    }
+}
+
 enum ControllerFeedbackEvent: Sendable {
     case rumble(left: UInt8, right: UInt8)
     case triggers(typeLeft: UInt8, left: [UInt8], typeRight: UInt8, right: [UInt8])
     /// Stereo S16 @ 3 kHz.
     case haptics([Int16])
     case motionReset
+    case hapticIntensity(ControllerEffectIntensity)
+    case triggerIntensity(ControllerEffectIntensity)
 }
 
 // MARK: - Telemetry

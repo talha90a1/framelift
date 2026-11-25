@@ -8,7 +8,7 @@
 // Usage: core_stress <seconds>
 #include "ControllerOutbox.h"
 #include "LogRedaction.h"
-#include "veyra/remoteplay/SessionInbox.h"
+#include "framelift/remoteplay/SessionInbox.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -21,7 +21,7 @@
 #include <thread>
 #include <vector>
 
-using namespace veyra::remoteplay;
+using namespace framelift::remoteplay;
 
 namespace {
 std::mutex tokenMutex;

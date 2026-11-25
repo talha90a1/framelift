@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // PS5 registration ("Pair Device" PIN flow) through Veyra's pairLocalPs5 (vr_pair_ps5).
 import Foundation
-import VeyraCore
+import FrameliftCore
 
 struct PairingError: LocalizedError {
     var code: Int32

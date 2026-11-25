@@ -136,9 +136,15 @@ enum PixelFormats {
         return f == videoRange420 || f == fullRange420
     }
 
-    static func makePool(width: Int, height: Int, minimum: Int) -> CVPixelBufferPool? {
+    static func is10Bit420(_ buffer: CVPixelBuffer) -> Bool {
+        let format = CVPixelBufferGetPixelFormatType(buffer)
+        return format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+    }
+
+    static func makePool(width: Int, height: Int, minimum: Int, format: OSType = videoRange420) -> CVPixelBufferPool? {
         let attrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: videoRange420,
+            kCVPixelBufferPixelFormatTypeKey as String: format,
             kCVPixelBufferWidthKey as String: width,
             kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),

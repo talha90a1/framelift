@@ -2,7 +2,7 @@
 // Core (Veyra C++ + chiaki-ng) visibility: redacted chiaki log forwarding and the per-second
 // "core ..." line written to Diagnostics.shared while a session streams.
 import Foundation
-import VeyraCore
+import FrameliftCore
 
 enum CoreDiagnostics {
     /// Forwards redacted chiaki log lines (the core drops anything that could carry keys) into
@@ -33,19 +33,21 @@ enum CoreDiagnostics {
         String(
             format: "core st=%d rx=%.0ffps %.1fMbps pkt=%llu/%llu lost fec=%llu ok/%llu fail idr=%llu sent/%llu retry"
                 + " vq=%u/%u hw drop=%llu rej=%llu rec=%llu waitIdr=%d lost=%llu missRef=%llu corrupt=%llu"
-                + " lat=%.2f/%.2f/%.2fms cb=%.2f/%.2fms aq=%.2f/%.2fms abuf=%.0fms adrop=%llu"
+                + " vq-ms[p50/p99/max]=%.2f/%.2f/%.2f cb-ms[p50/p99/max]=%.2f/%.2f/%.2f aq-ms[p50/p99/max]=%.2f/%.2f/%.2f abuf=%.0fms adrop=%llu"
                 + " warn=%llu err=%llu xport=%llu asm=%llu stale=%llu tgt=%lld wake=%llu idle=%llu"
-                + " tk=%d pktTotal=%llu/%llu lost ach=%u",
+                + " tk=%d pktTotal=%llu/%llu lost ach=%u owner-loop-gap-max=%.2fms",
             d.session_state, d.received_fps, d.video_mbps, d.packets_received, d.packets_lost,
             d.fec_success, d.fec_failed, d.idr_sent, d.idr_retries,
             d.video_depth, d.video_high_water_depth, d.video_dropped, d.video_rejected, d.video_recoveries,
             Int32(d.video_waiting_for_idr ? 1 : 0), d.metadata_frames_lost, d.missing_reference_frames, d.corrupt_frame_reports,
             d.video_queue_latency_ms_p50, d.video_queue_latency_ms_p99, d.video_queue_latency_ms_max,
-            d.video_callback_ms_p50, d.video_callback_ms_p99, d.audio_queue_latency_ms_p50, d.audio_queue_latency_ms_p99,
+            d.video_callback_ms_p50, d.video_callback_ms_p99, d.video_callback_ms_max,
+            d.audio_queue_latency_ms_p50, d.audio_queue_latency_ms_p99, d.audio_queue_latency_ms_max,
             d.audio_buffered_ms, d.audio_dropped,
             d.log_warnings, d.log_errors, d.transport_errors, d.assembly_errors, d.stale_callbacks,
             d.server_target_bitrate, d.owner_wakeups, d.owner_idle_timeouts,
-            d.takion_version, d.packets_received_total, d.packets_lost_total, d.audio_source_channels
+            d.takion_version, d.packets_received_total, d.packets_lost_total, d.audio_source_channels,
+            d.owner_loop_gap_ms_max
         )
     }
 }

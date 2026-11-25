@@ -8,6 +8,7 @@ struct ConsoleListView: View {
     @EnvironmentObject private var input: InputManager
     @State private var pairing: PairRequest?
     @State private var removing: PairedConsole?
+    @State private var internetConsole: PairedConsole?
     @State private var showCableSetup = false
     @AppStorage("framelift.hideCableTip") private var hideCableTip = false
 
@@ -29,8 +30,13 @@ struct ConsoleListView: View {
                             Task { await model.wake(console) }
                         } connect: {
                             Task { await model.connect(console) }
+                        } internet: {
+                            internetConsole = console
                         }
                         .contextMenu {
+                            if console.lastSettings != nil {
+                                Button("Use Last Settings") { model.useLastSettings(console) }
+                            }
                             Button("Pair Again…") { pairing = PairRequest(host: console.host) }
                             Button("Remove…", role: .destructive) { removing = console }
                         }
@@ -85,6 +91,9 @@ struct ConsoleListView: View {
             }
         }
         .sheet(isPresented: $showCableSetup) { CableSetupSheet() }
+        .sheet(item: $internetConsole) { console in
+            InternetConsoleSheet(account: model.psn, console: console).environmentObject(model)
+        }
         .sheet(item: $pairing) { request in
             PairSheet(initialHost: request.host)
                 .environmentObject(model)
@@ -175,30 +184,38 @@ private struct PairedConsoleRow: View {
     var busy: Bool
     var wake: () -> Void
     var connect: () -> Void
+    var internet: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "playstation.logo")
                 .font(.title2)
                 .foregroundStyle(statusColor)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(console.nickname).font(.headline)
                 Text("\(console.host) · \(statusText)")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Wake", action: wake)
-                .disabled(busy)
-                .help("Turn the PS5 on from rest mode")
-            Button("Connect", action: connect)
-                .buttonStyle(.borderedProminent)
-                .disabled(busy)
+            Menu {
+                Button("On This Network", action: connect)
+                Button("Over Internet…", action: internet)
+                Divider()
+                Button("Wake Only", action: wake).disabled(found?.standby == false)
+            } label: { Text("Connect") } primaryAction: { connect() }
+            .menuStyle(.borderedButton)
+            .buttonStyle(.borderedProminent)
+            .fixedSize()
+            .disabled(busy)
+            .help("Connect on this network, or choose Over Internet from the menu")
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
     }
 
     private var statusText: String {
-        guard let found else { return "Not found" }
+        guard let found else { return "Not detected on this network" }
         return found.standby ? "Rest mode" : "Ready"
     }
 
@@ -213,24 +230,31 @@ private struct StatusBar: View {
     @EnvironmentObject private var coordinator: StreamCoordinator
 
     var body: some View {
-        HStack(spacing: 16) {
-            if let message = activity {
-                ProgressView().controlSize(.small)
-                Text(message)
-            } else {
-                Label(model.targetDisplayLabel, systemImage: "display")
-                Label(presetText, systemImage: "film")
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 16) {
+                if let message = activity {
+                    if coordinator.phase != .streaming { ProgressView().controlSize(.small) }
+                    Text(message)
+                } else {
+                    Label(model.targetDisplayLabel, systemImage: "display")
+                    Label(presetText, systemImage: "film")
+                }
+                Spacer()
+                switch coordinator.phase {
+                case .connecting:
+                    Button("Cancel") { coordinator.stop() }
+                if coordinator.isRecording { Button("Stop Recording") { coordinator.toggleRecording() } }
+                case .streaming:
+                    Button(coordinator.isRecording ? "Stop Recording" : "Record") { coordinator.toggleRecording() }
+                    Button("Leave Stream") { coordinator.stop() }
+                case .idle, .stopping:
+                    if model.busyMessage != nil { Button("Cancel") { model.cancelPendingConnection() } }
+                }
             }
-            Spacer()
-            switch coordinator.phase {
-            case .connecting:
-                Button("Cancel") { coordinator.stop() }
-            case .streaming:
-                Button("Leave Stream") { coordinator.stop() }
-            case .idle, .stopping:
-                EmptyView()
+            if let message = coordinator.recordingMessage {
+                Text(message).font(.caption).textSelection(.enabled)
             }
-        }
+            }
         .font(.callout)
         .foregroundStyle(.secondary)
         .padding(.horizontal, 12)
@@ -242,7 +266,7 @@ private struct StatusBar: View {
         switch coordinator.phase {
         case .idle: return nil
         case .connecting(let text): return text
-        case .streaming: return "Streaming — Esc or ⇧⌘Q to leave, ⇧⌘O for stats"
+        case .streaming: return "Streaming · 60 fps target"
         case .stopping: return "Leaving stream…"
         }
     }

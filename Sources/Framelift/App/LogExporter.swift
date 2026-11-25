@@ -90,7 +90,7 @@ struct LogExporter {
             system.txt           System and Framelift settings
             sessions/*/          Event logs, frame timings, and summaries
 
-            Recordings and pairing keys are excluded. Names, account IDs, network addresses,
+            Recordings, pairing keys and sign-in credentials are excluded. Names, account IDs, network addresses,
             email addresses, and home paths are replaced with placeholders.
 
             Sessions
