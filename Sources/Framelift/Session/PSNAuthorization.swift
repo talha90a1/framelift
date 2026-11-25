@@ -4,7 +4,7 @@ import Foundation
 import Security
 import VeyraCore
 
-struct PSNAuthorization: Codable, CustomStringConvertible, CustomDebugStringConvertible {
+struct PSNAuthorization: Sendable, Equatable, Codable, CustomStringConvertible, CustomDebugStringConvertible {
     var accessToken: String
     var refreshToken: String
     var expiresAt: Date
@@ -68,30 +68,48 @@ struct PSNDevice: Identifiable, Hashable {
     @Published private(set) var loading = false
     private var authorization: PSNAuthorization?
     private var generation = 0
+    private var deviceRequest: Int?
+    private var refreshTask: (id: UUID, task: Task<PSNAuthorization, Error>)?
+    private let clearAuthorization: () throws -> Void
+    private let saveAuthorization: (PSNAuthorization) throws -> Void
+    private let refreshAuthorization: @Sendable (PSNAuthorization) async throws -> PSNAuthorization
 
-    init() {
-        authorization = PSNKeychain.load()
+    init(authorization: PSNAuthorization? = PSNKeychain.load(),
+         save: @escaping (PSNAuthorization) throws -> Void = PSNKeychain.save,
+         clear: @escaping () throws -> Void = PSNKeychain.clear,
+         refresh: @escaping @Sendable (PSNAuthorization) async throws -> PSNAuthorization = { try await PSNSignIn.refresh($0) }) {
+        self.authorization = authorization
+        clearAuthorization = clear
+        saveAuthorization = save
+        refreshAuthorization = refresh
         signedIn = authorization != nil
         onlineID = authorization?.onlineID
     }
 
     func accept(_ account: PSNSignIn.Account) async throws {
         guard let authorization = account.authorization else { throw PSNSignIn.Failure.badResponse }
-        try PSNKeychain.save(authorization)
+        try saveAuthorization(authorization)
+        refreshTask?.task.cancel()
+        refreshTask = nil
         self.authorization = authorization
         signedIn = true
         onlineID = authorization.onlineID
+        devices = []
         generation += 1
         try await refreshDevices()
     }
 
     func signOut() throws {
-        try PSNKeychain.clear()
+        try clearAuthorization()
         generation += 1
+        refreshTask?.task.cancel()
+        refreshTask = nil
         authorization = nil
         signedIn = false
         onlineID = nil
         devices = []
+        deviceRequest = nil
+        loading = false
     }
 
     func accessToken(for accountID: Data? = nil) async throws -> String {
@@ -101,19 +119,33 @@ struct PSNDevice: Identifiable, Hashable {
         }
         if current.expiresAt.timeIntervalSinceNow < 60 {
             let before = generation
-            current = try await PSNSignIn.refresh(current)
+            let pending: (id: UUID, task: Task<PSNAuthorization, Error>)
+            if let active = refreshTask { pending = active }
+            else {
+                let refresh = refreshAuthorization
+                let previous = current
+                pending = (UUID(), Task { try await refresh(previous) })
+                refreshTask = pending
+            }
+            defer { if refreshTask?.id == pending.id { refreshTask = nil } }
+            current = try await pending.task.value
             guard before == generation, authorization != nil else { throw CancellationError() }
-            try PSNKeychain.save(current)
-            authorization = current
+            if authorization != current {
+                authorization = current
+                try saveAuthorization(current)
+            }
         }
         return current.accessToken
     }
 
     func refreshDevices() async throws {
-        guard !loading else { return }
-        loading = true
-        defer { loading = false }
         let before = generation
+        guard deviceRequest != before else { return }
+        deviceRequest = before
+        loading = true
+        defer {
+            if deviceRequest == before { deviceRequest = nil; loading = false }
+        }
         let token = try await accessToken()
         let result = await BridgeInterop.run { () -> (Int32, [PSNDevice]) in
             var native = [VRPSNDevice](repeating: VRPSNDevice(), count: 32)

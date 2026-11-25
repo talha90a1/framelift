@@ -30,7 +30,9 @@ struct PairedDualSense: Identifiable, Equatable, Sendable {
     }
 
     func perform(_ action: Action) async throws {
-        try await Task.detached(priority: .userInitiated) {
+        try Task.checkCancellation()
+        let operation = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
             guard let device = Self.pairedDevices().first(where: { $0.addressString == id }) else {
                 throw OperationError.unavailable
             }
@@ -44,12 +46,14 @@ struct PairedDualSense: Identifiable, Equatable, Sendable {
             }
 
             for _ in 0..<20 {
+                try Task.checkCancellation()
                 let finished = action == .unpair ? !device.isPaired() : !device.isConnected()
                 if finished { return }
                 try await Task.sleep(for: .milliseconds(150))
             }
             throw OperationError.failed
-        }.value
+        }
+        try await withTaskCancellationHandler { try await operation.value } onCancel: { operation.cancel() }
     }
 
     private static func pairedDevices() -> [IOBluetoothDevice] {

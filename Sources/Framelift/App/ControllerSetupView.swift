@@ -10,6 +10,8 @@ struct ControllerSetupView: View {
     @StateObject private var pairing = DualSensePairing()
     @State private var showGuide: Bool?
     @State private var showDevices = false
+    @State private var repairingCandidate: DualSensePairing.Candidate?
+    @State private var confirmRepair = false
 
     private var guideVisible: Bool {
         status.connected == nil && (showGuide ?? (status.lastConnected == nil))
@@ -50,6 +52,12 @@ struct ControllerSetupView: View {
             showGuide = false
         }
         .onDisappear { pairing.cancel(connected: status.connected != nil) }
+        .alert("Pair this controller again?", isPresented: $confirmRepair, presenting: repairingCandidate) { candidate in
+            Button("Pair Again", role: .destructive) { pairing.pairAgain(candidate) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This removes only this controller’s saved Bluetooth pairing from this Mac. Keep the controller unplugged and flashing in pairing mode while it pairs again.")
+        }
         .sheet(isPresented: $showDevices) {
             DualSenseDevicesView(openBluetoothSettings: openBluetoothSettings, didUnpair: didUnpair)
         }
@@ -57,7 +65,7 @@ struct ControllerSetupView: View {
 
     private var pairingInProgress: Bool {
         switch pairing.state {
-        case .searching, .pairing, .connecting: true
+        case .searching, .repairing, .pairing, .connecting: true
         default: false
         }
     }
@@ -66,7 +74,7 @@ struct ControllerSetupView: View {
         VStack(alignment: .leading, spacing: 3) {
             if let controller = status.connected {
                 Text(controller.name).font(.headline).lineLimit(1).help(controller.name)
-                Label("Connected", systemImage: "checkmark.circle.fill")
+                Label(status.connectionDetail ?? "Connected", systemImage: "checkmark.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if !guideVisible, let controller = status.lastConnected {
@@ -104,28 +112,34 @@ struct ControllerSetupView: View {
             progress("Searching for DualSense…")
         case .found(let devices):
             ForEach(devices) { candidate in
-                HStack {
-                    Text(candidate.name).font(.callout).lineLimit(1)
-                    Spacer(minLength: 4)
-                    Button("Pair") { pairing.pair(candidate) }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(candidate.name).font(.callout).lineLimit(1).help(candidate.name)
+                    Button(candidate.isPaired ? "Reconnect" : "Pair") { pairing.pair(candidate) }
                         .buttonStyle(.borderedProminent)
-                        .accessibilityLabel("Pair \(candidate.name)")
+                        .accessibilityLabel(candidate.isPaired ? "Reconnect \(candidate.name)" : "Pair \(candidate.name)")
                 }
             }
             Button("Search Again", action: pairing.search)
+        case .repairing:
+            progress("Removing the old Mac pairing…")
         case .pairing:
             progress("Pairing…")
         case .connecting:
             progress("Connecting…")
-        case .paired:
-            note("Paired over Bluetooth. Press PS to connect.")
-            Button("Search Again", action: pairing.search)
+        case .needsRepair(let candidate, let message):
+            note(LocalizedStringKey(message))
+            note("Turn the controller off or choose its Mac slot first. Pair Again resets this Mac’s saved pairing.")
+            HStack {
+                Button("Reconnect") { pairing.pair(candidate) }
+                Button("Pair Again…") { askToRepair(candidate) }
+            }
+            Link("Switching between devices", destination: URL(string: "https://www.playstation.com/en-au/support/hardware/pair-dualsense-controller-bluetooth/")!)
+                .font(.caption)
+            Button("Bluetooth Settings…", action: openBluetoothSettings)
         case .failed(let message):
             note(LocalizedStringKey(message))
-            HStack {
-                Button("Try Again", action: pairing.search)
-                Button("Bluetooth Settings…", action: openBluetoothSettings)
-            }
+            Button("Try Again", action: pairing.search)
+            Button("Bluetooth Settings…", action: openBluetoothSettings)
         }
     }
 
@@ -142,6 +156,11 @@ struct ControllerSetupView: View {
             note(message)
             Button("Cancel") { pairing.cancel() }
         }
+    }
+
+    private func askToRepair(_ candidate: DualSensePairing.Candidate) {
+        repairingCandidate = candidate
+        confirmRepair = true
     }
 
     private func openBluetoothSettings() {

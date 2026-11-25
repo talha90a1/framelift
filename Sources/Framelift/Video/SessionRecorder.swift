@@ -184,7 +184,13 @@ final class RecordingOutput: @unchecked Sendable {
 
     func start(url: URL) {
         let recorder = SessionRecorder(url: url)
-        recorder.onError = { [weak self] in self?.onError?($0) }
+        recorder.onError = { [weak self, weak recorder] message in
+            DispatchQueue.main.async {
+                guard let self, let recorder else { return }
+                let callback = self.lock.withLock { self.recorder === recorder ? self.onError : nil }
+                callback?(message)
+            }
+        }
         lock.withLock { self.recorder = recorder }
     }
 

@@ -29,4 +29,5 @@ struct ControllerIdentity: Codable, Equatable, Sendable {
 struct ControllerStatus: Equatable {
     var connected: ControllerIdentity?
     var lastConnected: ControllerIdentity?
+    var connectionDetail: String? = nil
 }

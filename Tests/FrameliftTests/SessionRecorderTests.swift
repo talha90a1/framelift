@@ -15,7 +15,7 @@ struct SessionRecorderTests {
         let data = Data(repeating: 128, count: width * height * 3 / 2)
         let frame = try #require(OfflineFrameGenHarness.makeBuffer(data, w: width, h: height))
         let start = HostClock.now()
-        for index in 0..<30 {
+        for index in 0..<120 {
             let time = HostClock.seconds(start) + Double(index) / 60
             recorder.appendVideo(frame, tags: .untagged, at: time)
             let samples = (0..<800).flatMap { offset -> [Int16] in
@@ -40,7 +40,7 @@ struct SessionRecorderTests {
         var frames = 0, blocks = 0
         while output.copyNextSampleBuffer() != nil { frames += 1 }
         while sound.copyNextSampleBuffer() != nil { blocks += 1 }
-        #expect(frames >= 20 && blocks > 0)
+        #expect(frames >= 20 && blocks > 0, "Decoded \(frames) video frames and \(blocks) audio blocks; reader: \(reader.status.rawValue), error: \(String(describing: reader.error))")
         #expect(reader.status == .completed)
     }
 }

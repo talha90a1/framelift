@@ -17,6 +17,21 @@ struct ControllerSetupTests {
         #expect(ControllerIdentity.stored(in: defaults) == nil)
     }
 
+    @Test func canceledRemovalDoesNotStartBluetoothWork() async {
+        let device = PairedDualSense(id: "00-00-00-00-00-00", name: "DualSense", isConnected: false)
+        let operation = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await device.perform(.unpair)
+        }
+        do {
+            try await operation.value
+            Issue.record("Canceled controller removal succeeded")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Canceled removal reached Bluetooth work: \(error)")
+        }
+    }
+
     @Test func pairingDemoFlashesAfterHoldingBothButtons() {
         #expect(DualSensePairingDemo.loopTime(-1) == 0)
         #expect(DualSensePairingDemo.loopTime(5.5) == 0)

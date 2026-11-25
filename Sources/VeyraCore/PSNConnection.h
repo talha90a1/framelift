@@ -9,7 +9,17 @@
 class PSNConnection {
 public:
     PSNConnection() { chiaki_log_init(&log_, CHIAKI_LOG_ERROR | CHIAKI_LOG_WARNING, quietLog, nullptr); }
-    ~PSNConnection() { if (owned_ && session_) chiaki_holepunch_session_fini(session_); }
+    ~PSNConnection() {
+        if (!owned_ || !session_) return;
+        for (auto type : {CHIAKI_HOLEPUNCH_PORT_TYPE_CTRL, CHIAKI_HOLEPUNCH_PORT_TYPE_DATA}) {
+            auto* socket = chiaki_get_holepunch_sock(session_, type);
+            if (socket && !CHIAKI_SOCKET_IS_INVALID(*socket)) {
+                CHIAKI_SOCKET_CLOSE(*socket);
+                *socket = CHIAKI_INVALID_SOCKET;
+            }
+        }
+        chiaki_holepunch_session_fini(session_);
+    }
 
     ChiakiErrorCode prepare(const char* token, const uint8_t uid[32], const std::function<void(int)>& progress) {
         {

@@ -10,17 +10,22 @@ final class DualSensePairing: NSObject, ObservableObject {
         let id: String
         let name: String
         fileprivate let device: IOBluetoothDevice
+        var isPaired: Bool { device.isPaired() }
     }
 
     enum State {
-        case idle, searching, found([Candidate]), pairing, connecting, paired
+        case idle, searching, found([Candidate]), repairing, pairing, connecting
+        case needsRepair(Candidate, String)
         case failed(String)
     }
 
     @Published private(set) var state: State = .idle
     private var inquiry: IOBluetoothDeviceInquiry?
     private var pairing: IOBluetoothDevicePair?
-    private var connectingDevice: IOBluetoothDevice?
+    private var connectingCandidate: Candidate?
+    private var pairingCandidate: Candidate?
+    private var repairTask: Task<Void, Never>?
+    private var generation = 0
     private var timeout: Task<Void, Never>?
     private let log = Logger(subsystem: "com.framelift.mac", category: "Bluetooth")
 
@@ -51,34 +56,70 @@ final class DualSensePairing: NSObject, ObservableObject {
     }
 
     func pair(_ candidate: Candidate) {
-        guard case let .found(devices) = state, devices.contains(where: { $0.id == candidate.id }) else { return }
-        if candidate.device.isPaired() {
-            connect(candidate.device)
-            return
+        let selected: Candidate?
+        switch state {
+        case .found(let devices): selected = devices.first { $0.id == candidate.id }
+        case .needsRepair(let device, _): selected = device.id == candidate.id ? device : nil
+        default: selected = nil
         }
+        guard let selected else { return }
+        if selected.isPaired { connect(selected) }
+        else { startPairing(selected) }
+    }
 
+    func pairAgain(_ candidate: Candidate) {
+        guard case .needsRepair(let selected, _) = state, selected.id == candidate.id else { return }
+        cancel()
+        state = .repairing
+        let attempt = generation
+        repairTask = Task { [weak self] in
+            do {
+                try Task.checkCancellation()
+                if selected.isPaired {
+                    let saved = PairedDualSense(id: selected.id, name: selected.name, isConnected: selected.device.isConnected())
+                    try await saved.perform(.unpair)
+                }
+                try Task.checkCancellation()
+                guard let self, attempt == generation else { return }
+                repairTask = nil
+                startPairing(selected)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, attempt == generation else { return }
+                fail("Couldn’t remove this controller’s old pairing. Forget it in Bluetooth Settings, then try again.")
+            }
+        }
+    }
+
+    private func startPairing(_ candidate: Candidate) {
         guard let pairing = IOBluetoothDevicePair(device: candidate.device) else {
             state = .failed("Couldn’t pair with the controller.")
             return
         }
         self.pairing = pairing
+        pairingCandidate = candidate
         pairing.delegate = self
         state = .pairing
         let result = pairing.start()
         guard result == kIOReturnSuccess else {
             log.error("DualSense pairing failed to start: \(result)")
-            fail("Couldn’t pair with the controller.")
+            connectionFailed(candidate, message: "Couldn’t pair with the controller.")
             return
         }
         setTimeout(.seconds(20)) { [weak self] in
-            self?.fail("Pairing timed out. Put the controller back in pairing mode and try again.")
+            self?.connectionFailed(candidate, message: "Pairing timed out. Put the controller back in pairing mode and try again.")
         }
     }
 
     func cancel(connected: Bool = false) {
+        generation += 1
+        repairTask?.cancel()
+        repairTask = nil
         timeout?.cancel()
         timeout = nil
-        connectingDevice = nil
+        connectingCandidate = nil
+        pairingCandidate = nil
         if let inquiry {
             self.inquiry = nil
             inquiry.delegate = nil
@@ -111,32 +152,33 @@ final class DualSensePairing: NSObject, ObservableObject {
             : .found(matches)
     }
 
-    private func connect(_ device: IOBluetoothDevice) {
+    private func connect(_ candidate: Candidate) {
         state = .connecting
-        if !device.isConnected() {
-            connectingDevice = device
-            let result = device.openConnection(self)
+        connectingCandidate = candidate
+        if !candidate.device.isConnected() {
+            let result = candidate.device.openConnection(self, withPageTimeout: BluetoothHCIPageTimeout(kDefaultPageTimeout.rawValue), authenticationRequired: true)
             if result != kIOReturnSuccess {
                 log.error("DualSense connection failed to start: \(result)")
-                showPaired()
+                connectionFailed(candidate, message: "Couldn’t connect to the controller.")
                 return
             }
         }
-        setTimeout(.seconds(8)) { [weak self] in self?.showPaired() }
+        setTimeout(.seconds(8)) { [weak self] in
+            self?.connectionFailed(candidate, message: "The controller hasn’t connected for input.")
+        }
     }
 
-    private func showPaired() {
-        timeout?.cancel()
-        timeout = nil
-        connectingDevice = nil
-        state = .paired
+    private func connectionFailed(_ candidate: Candidate, message: String) {
+        let savedPairing = candidate.isPaired
+        cancel()
+        state = savedPairing ? .needsRepair(candidate, message) : .failed(message)
     }
 
     @objc nonisolated func connectionComplete(_ device: IOBluetoothDevice, status: IOReturn) {
         Task { @MainActor in
-            guard device === connectingDevice, status != kIOReturnSuccess else { return }
+            guard let candidate = connectingCandidate, device === candidate.device, status != kIOReturnSuccess else { return }
             log.error("DualSense connection failed: \(status)")
-            showPaired()
+            connectionFailed(candidate, message: "Couldn’t reconnect. The controller may still be connected to the PS5, or its saved Mac pairing may be outdated.")
         }
     }
 
@@ -165,13 +207,16 @@ extension DualSensePairing: IOBluetoothDeviceInquiryDelegate, IOBluetoothDeviceP
     nonisolated func devicePairingFinished(_ sender: Any!, error: IOReturn) {
         Task { @MainActor in
             guard let sender = sender as? IOBluetoothDevicePair, sender === pairing else { return }
+            let candidate = pairingCandidate
             self.pairing = nil
+            pairingCandidate = nil
             sender.delegate = nil
-            if error == kIOReturnSuccess, let device = sender.device() {
-                connect(device)
+            if error == kIOReturnSuccess, let candidate {
+                connect(candidate)
             } else {
                 log.error("DualSense pairing failed: \(error)")
-                fail("Couldn’t pair with the controller.")
+                if let candidate { connectionFailed(candidate, message: "Couldn’t pair with the controller.") }
+                else { fail("Couldn’t pair with the controller.") }
             }
         }
     }
