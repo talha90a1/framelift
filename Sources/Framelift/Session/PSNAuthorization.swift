@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import Combine
 import Foundation
-import Security
 import FrameliftCore
 
 struct PSNAuthorization: Sendable, Equatable, Codable, CustomStringConvertible, CustomDebugStringConvertible {
@@ -12,47 +11,6 @@ struct PSNAuthorization: Sendable, Equatable, Codable, CustomStringConvertible, 
     var onlineID: String?
     var description: String { "PSNAuthorization(<redacted>)" }
     var debugDescription: String { description }
-}
-
-enum PSNKeychain {
-    private static var query: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "com.framelift.mac.psn",
-         kSecAttrAccount as String: "remote-play"]
-    }
-
-    static func load() -> PSNAuthorization? {
-        var q = query
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return try? JSONDecoder().decode(PSNAuthorization.self, from: data)
-    }
-
-    static func save(_ authorization: PSNAuthorization) throws {
-        let data = try JSONEncoder().encode(authorization)
-        let attributes = [kSecValueData as String: data]
-        let update = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if update == errSecSuccess { return }
-        guard update == errSecItemNotFound else { throw Failure(status: update) }
-        var q = query
-        q[kSecValueData as String] = data
-        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let added = SecItemAdd(q as CFDictionary, nil)
-        guard added == errSecSuccess else { throw Failure(status: added) }
-    }
-
-    static func clear() throws {
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw Failure(status: status) }
-    }
-
-    private struct Failure: LocalizedError {
-        let status: OSStatus
-        var errorDescription: String? { "Couldn't update PlayStation sign-in in Keychain. Try signing in again." }
-    }
 }
 
 struct PSNDevice: Identifiable, Hashable {
@@ -66,6 +24,7 @@ struct PSNDevice: Identifiable, Hashable {
     @Published private(set) var onlineID: String?
     @Published private(set) var devices: [PSNDevice] = []
     @Published private(set) var loading = false
+    @Published private(set) var credentialError: String?
     private var authorization: PSNAuthorization?
     private var generation = 0
     private var deviceRequest: Int?
@@ -73,10 +32,19 @@ struct PSNDevice: Identifiable, Hashable {
     private let clearAuthorization: () throws -> Void
     private let saveAuthorization: (PSNAuthorization) throws -> Void
     private let refreshAuthorization: @Sendable (PSNAuthorization) async throws -> PSNAuthorization
+    private var loadAuthorization: (() throws -> PSNAuthorization?)?
 
-    init(authorization: PSNAuthorization? = PSNKeychain.load(),
-         save: @escaping (PSNAuthorization) throws -> Void = PSNKeychain.save,
-         clear: @escaping () throws -> Void = PSNKeychain.clear,
+    convenience init() { self.init(credentials: .standard) }
+
+    convenience init(credentials: PSNCredentialStore) {
+        self.init(authorization: nil, save: credentials.save, clear: credentials.clear)
+        loadAuthorization = credentials.load
+        restoreSavedSignIn()
+    }
+
+    init(authorization: PSNAuthorization?,
+         save: @escaping (PSNAuthorization) throws -> Void = PSNCredentialStore.standard.save,
+         clear: @escaping () throws -> Void = PSNCredentialStore.standard.clear,
          refresh: @escaping @Sendable (PSNAuthorization) async throws -> PSNAuthorization = { try await PSNSignIn.refresh($0) }) {
         self.authorization = authorization
         clearAuthorization = clear
@@ -86,9 +54,20 @@ struct PSNDevice: Identifiable, Hashable {
         onlineID = authorization?.onlineID
     }
 
+    func restoreSavedSignIn() {
+        guard !signedIn, let loadAuthorization else { return }
+        do {
+            authorization = try loadAuthorization()
+            signedIn = authorization != nil
+            onlineID = authorization?.onlineID
+            credentialError = nil
+        } catch { credentialError = error.localizedDescription }
+    }
+
     func accept(_ account: PSNSignIn.Account) throws {
         guard let authorization = account.authorization else { throw PSNSignIn.Failure.badResponse }
         try saveAuthorization(authorization)
+        credentialError = nil
         refreshTask?.task.cancel()
         refreshTask = nil
         self.authorization = authorization
@@ -100,6 +79,7 @@ struct PSNDevice: Identifiable, Hashable {
 
     func signOut() throws {
         try clearAuthorization()
+        credentialError = nil
         generation += 1
         refreshTask?.task.cancel()
         refreshTask = nil

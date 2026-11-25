@@ -18,8 +18,13 @@ struct InternetPlaySettings: View {
                     }
                 }
                 if account.loading { ProgressView().controlSize(.small) }
+                if account.credentialError != nil {
+                    Button("Try Saved Sign-in Again") { account.restoreSavedSignIn() }
+                }
             }
-            if let error { Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            if let message = error ?? account.credentialError {
+                Text(message).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
         }
         .sheet(isPresented: $signingIn) {
             PSNSignInSheet { result in

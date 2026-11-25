@@ -62,7 +62,7 @@ import Testing
         #expect(saves == 1)
     }
 
-    @Test func keychainFailureDoesNotReuseARotatedRefreshToken() async throws {
+    @Test func storageFailureDoesNotReuseARotatedRefreshToken() async throws {
         enum FixtureError: Error { case unavailable }
         let calls = RefreshCalls()
         let store = PSNAccountStore(authorization: expired, save: { _ in throw FixtureError.unavailable }, clear: {}) { previous in
@@ -74,7 +74,7 @@ import Testing
         }
         do {
             _ = try await store.accessToken()
-            Issue.record("A Keychain write failure was ignored")
+            Issue.record("A credential write failure was ignored")
         } catch FixtureError.unavailable {}
         #expect(try await store.accessToken() == "fixture-new")
         #expect(await calls.count == 1)
