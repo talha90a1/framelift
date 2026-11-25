@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/icon.png" width="128" alt="Framelift icon">
+  <img src="Resources/AppIcon.png" width="128" alt="Framelift icon">
 </p>
 
 <h1 align="center">Framelift</h1>
@@ -48,7 +48,7 @@ For a direct cable from the PS5 to the Mac, use **System Settings › General �
 
 ## Settings
 
-See [Settings and debug logs](docs/SETTINGS.md).
+Open **Framelift › Settings…** to adjust the stream, display and controller options.
 
 ## How it works
 
@@ -71,7 +71,6 @@ Tested on a MacBook Air with M4 and a 120 Hz display: a generated frame takes ab
 
 ## More
 
-- [Settings, debug logs and reporting bugs](docs/SETTINGS.md)
 - [Building from source and contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md) · [Changelog](CHANGELOG.md)
 

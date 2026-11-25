@@ -30,7 +30,7 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 
 ## Code layout
 
-See [docs/MODULE_APIS.md](docs/MODULE_APIS.md) for the modules and their public APIs.
+See `Sources/` for the modules and their interfaces.
 
 ## Tests
 
