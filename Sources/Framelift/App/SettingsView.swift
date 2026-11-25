@@ -60,14 +60,10 @@ struct SettingsView: View {
                 }
             }
             Section("60 fps output") {
-                LabeledContent("Frame generation", value: (model.settings.codec == .hevcHDR
-                    ? HDRFrameInterpolator.isSupported : AppleLLFIInterpolator.isSupported) ? "Apple ML" : "Unavailable")
+                LabeledContent("Frame generation", value: AppleLLFIInterpolator.isSupported ? "Apple ML" : "Unavailable")
                 Picker("Game preset", selection: presetBinding) {
                     ForEach(Self.presets) { Text($0.title).tag($0) }
                 }
-                Toggle("HDR", isOn: Binding(get: { model.settings.codec == .hevcHDR },
-                    set: { model.settings.codec = $0 ? .hevcHDR : .hevc }))
-                    .help("Request 10-bit HDR from the PS5. HDR frame generation uses Apple ML on supported Macs.")
                 LabeledContent("Maximum bitrate") {
                     HStack {
                         Slider(value: bitrateBinding, in: bitrateRange, step: 1)

@@ -71,12 +71,19 @@ struct SettingsStoreTests {
         #expect(SettingsStore.sanitized(settings).bitrateKbps == 100_000)
     }
 
-    @Test func hdrPreferenceKeepsTenBitStream() {
-        var settings = StreamSettings()
-        settings.codec = .hevcHDR
-        settings.upscaler = .metalFX
-        let sanitized = SettingsStore.sanitized(settings)
-        #expect(sanitized.codec == .hevcHDR && sanitized.upscaler == .metalFX)
+    @Test func legacyHDRPreferenceUsesHEVCWithoutResettingSettings() throws {
+        let (store, defaults, suite) = makeStore()
+        defer { removeTestDefaults(suite) }
+        let json = #"{"width":1280,"height":720,"streamFPS":60,"bitrateKbps":23000,"codec":2,"targetDisplayID":42,"fullscreen":false,"sharpness":0.9,"upscaler":"metalFX","protectSubtitles":false,"audioOffsetMs":25}"#
+        defaults.set(Data(json.utf8), forKey: SettingsStore.key)
+        let loaded = store.load()
+        #expect(loaded.codec == .hevc)
+        #expect(StreamPreset(settings: loaded) == .p720fps60 && loaded.bitrateKbps == 23_000)
+        #expect(loaded.targetDisplayID == 42 && !loaded.fullscreen)
+        #expect(loaded.sharpness == 0.9 && loaded.upscaler == .metalFX)
+        #expect(!loaded.protectSubtitles && loaded.audioOffsetMs == 25)
+        let saved = try JSONSerialization.jsonObject(with: JSONEncoder().encode(loaded)) as? [String: Any]
+        #expect(saved?["codec"] as? Int == 1)
     }
 
     @Test func oldGenerationOffPreferenceCannotDisableInterpolation() throws {
@@ -84,7 +91,7 @@ struct SettingsStoreTests {
         defer { removeTestDefaults(suite) }
         defaults.set(Data(#"{"frameGeneration":false,"codec":2,"keepStaticOverlays":true,"blendFallback":true}"#.utf8), forKey: SettingsStore.key)
         let loaded = store.load()
-        #expect(loaded.codec == .hevcHDR && !loaded.keepStaticOverlays && !loaded.blendFallback)
+        #expect(loaded.codec == .hevc && !loaded.keepStaticOverlays && !loaded.blendFallback)
         let saved = try JSONEncoder().encode(loaded)
         #expect(!(String(data: saved, encoding: .utf8) ?? "").contains("frameGeneration"))
     }
@@ -127,11 +134,12 @@ struct SettingsStoreTests {
         #expect(!store.load().keepStaticOverlays && !store.load().blendFallback)
     }
 
-    @Test func pairedConsoleWithPartialSettingsDecodes() throws {
+    @Test(arguments: [1, 2]) func pairedConsoleWithPartialSettingsDecodes(codec: Int) throws {
         let json =
-            #"[{"id":"aa","nickname":"PS5","host":"192.168.1.2","lastSettings":{"width":1920,"height":1080,"streamFPS":30,"bitrateKbps":50000,"codec":1,"fullscreen":true,"sceneCutFallback":true,"showOverlay":false}}]"#
+            #"[{"id":"aa","nickname":"PS5","host":"192.168.1.2","lastSettings":{"width":1920,"height":1080,"streamFPS":30,"bitrateKbps":50000,"codec":\#(codec),"fullscreen":true,"sceneCutFallback":true,"showOverlay":false}}]"#
         let consoles = try JSONDecoder().decode([PairedConsole].self, from: Data(json.utf8))
         #expect(consoles.first?.lastSettings?.bitrateKbps == 50000)
+        #expect(consoles.first?.lastSettings?.codec == .hevc)
     }
 
     @Test func debugLogsUseDefaultAndHonorSavedChoice() {

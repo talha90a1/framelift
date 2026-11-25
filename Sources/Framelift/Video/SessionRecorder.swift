@@ -24,7 +24,6 @@ final class SessionRecorder: @unchecked Sendable {
     private var stopped = false
     private var failure: Error?
     private var size: (Int, Int)?
-    private var hdr: Bool?
     private var dropped = 0
 
     init(url: URL) { self.url = url }
@@ -39,7 +38,7 @@ final class SessionRecorder: @unchecked Sendable {
             guard !stopped else { return }
             do {
                 if writer == nil { try begin(frame, tags: tags, at: hostTime) }
-                guard size?.0 == CVPixelBufferGetWidth(frame), size?.1 == CVPixelBufferGetHeight(frame), hdr == (tags.hdrCurve != nil) else {
+                guard size?.0 == CVPixelBufferGetWidth(frame), size?.1 == CVPixelBufferGetHeight(frame) else {
                     throw RecordingError.formatChanged
                 }
                 let time = CMTime(seconds: hostTime - origin!, preferredTimescale: 60000)
@@ -95,10 +94,8 @@ final class SessionRecorder: @unchecked Sendable {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         writer.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
-        let isHDR = tags.hdrCurve != nil
-        var compression: [String: Any] = [AVVideoAverageBitRateKey: width * height * 12,
+        let compression: [String: Any] = [AVVideoAverageBitRateKey: width * height * 12,
             AVVideoExpectedSourceFrameRateKey: 60, AVVideoMaxKeyFrameIntervalKey: 60]
-        if isHDR { compression[AVVideoProfileLevelKey] = kVTProfileLevel_HEVC_Main10_AutoLevel }
         var settings: [String: Any] = [AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: width, AVVideoHeightKey: height, AVVideoCompressionPropertiesKey: compression]
         var color: [String: Any] = [:]
@@ -119,7 +116,7 @@ final class SessionRecorder: @unchecked Sendable {
         guard writer.startWriting() else { throw writer.error ?? RecordingError.writeFailed }
         writer.startSession(atSourceTime: .zero)
         self.writer = writer; self.video = video; self.audio = audio; self.pixels = pixels
-        origin = hostTime; size = (width, height); hdr = isHDR
+        origin = hostTime; size = (width, height)
     }
 
     private func writeAudio(_ chunk: PCMChunk, delay: Double) throws {

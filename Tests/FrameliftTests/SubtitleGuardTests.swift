@@ -197,8 +197,7 @@ struct SubtitleGuardTests {
 
     private func buffer(_ y: [UInt8], width: Int = 64, height: Int = 32, tenBit: Bool = false) throws -> CVPixelBuffer {
         if tenBit {
-            let frame = try HDRPresentTests.frame(width: width, height: height, y: 64, c: 512)
-            HDRInterpolationTests.tag(frame)
+            let frame = try PixelFormatTests.frame(width: width, height: height, y: 64, c: 512)
             CVPixelBufferLockBaseAddress(frame, [])
             defer { CVPixelBufferUnlockBaseAddress(frame, []) }
             let base = CVPixelBufferGetBaseAddressOfPlane(frame, 0)!

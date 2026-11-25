@@ -20,8 +20,8 @@
 
 ## What you get
 
-- **Smoother motion.** Apple’s on-device frame interpolation can turn a 30 fps stream into 60 fps and keep subtitles and HUD elements sharp, including in HDR.
-- **Play on your screen of choice.** Stream at 1080p or 720p, play fullscreen on a monitor or TV, and use HDR on compatible displays.
+- **Smoother motion.** Apple’s on-device frame interpolation can turn a 30 fps stream into 60 fps and keep subtitles and HUD elements sharp.
+- **Play on your screen of choice.** Stream at 1080p or 720p, play fullscreen on a monitor or TV.
 - **DualSense support.** Touchpad, motion controls, rumble, haptics and adaptive triggers.
 
 ## Install
@@ -65,7 +65,8 @@ Tested on a MacBook Air with M4 and a 120 Hz display: a generated frame takes ab
 ## Limits
 
 - Local network only.
-- HDR frame generation uses Apple’s floating-point frame-rate converter and retains 10-bit PQ or HLG. Its processing cost is higher than SDR interpolation; late generated frames fall back to real frames.
+- SDR only; HDR is not supported.
+- Generated frames can show artifacts around moving objects.
 - Output is up to 60 fps.
 
 ## More

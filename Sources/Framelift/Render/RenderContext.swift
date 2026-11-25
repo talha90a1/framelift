@@ -113,24 +113,6 @@ final class RenderContext: @unchecked Sendable {
         return (y, c, [ky, kc])
     }
 
-    func rgbaTexture(_ buffer: CVPixelBuffer) -> (MTLTexture, CVMetalTexture)? {
-        guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_64RGBAHalf else { return nil }
-        return packedTexture(buffer, format: .rgba16Float)
-    }
-
-    func flowTexture(_ buffer: CVPixelBuffer) -> (MTLTexture, CVMetalTexture)? {
-        guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_TwoComponent16Half else { return nil }
-        return packedTexture(buffer, format: .rg16Float)
-    }
-
-    private func packedTexture(_ buffer: CVPixelBuffer, format: MTLPixelFormat) -> (MTLTexture, CVMetalTexture)? {
-        var cv: CVMetalTexture?
-        guard CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, buffer, nil, format,
-            CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer), 0, &cv) == kCVReturnSuccess,
-            let cv, let texture = CVMetalTextureGetTexture(cv) else { return nil }
-        return (texture, cv)
-    }
-
     /// Writable view of one IOSurface plane (the texture retains the surface).
     func writablePlaneTexture(_ buffer: CVPixelBuffer, plane: Int, format: MTLPixelFormat) -> MTLTexture? {
         guard let surface = CVPixelBufferGetIOSurface(buffer)?.takeUnretainedValue() else { return nil }

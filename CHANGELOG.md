@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- HDR streaming and frame generation. Saved HDR preferences now use SDR HEVC.
+
 ## 1.0.2 - 2026-11-24
 
 ### Added

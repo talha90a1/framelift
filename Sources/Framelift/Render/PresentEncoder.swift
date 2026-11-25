@@ -22,8 +22,7 @@ final class PresentEncoder: @unchecked Sendable {
     private struct Pipelines {
         var bilinear, sharp, copy, hud: MTLRenderPipelineState
     }
-    /// By target pixel format: bgra8Unorm (SDR drawable and MetalFX input), bgr10a2Unorm (HDR
-    /// drawable), rgba16Float (HDR MetalFX input).
+    /// Render pipelines cached by target pixel format.
     private var pipelines: [MTLPixelFormat: Pipelines] = [:]
 
     private struct ScalerKey: Equatable {
@@ -129,7 +128,6 @@ final class PresentEncoder: @unchecked Sendable {
         let fw = CVPixelBufferGetWidth(frame), fh = CVPixelBufferGetHeight(frame)
         let fit = Self.fitRect(frame: fw, fh, target: dw, dh)
         let isUpscale = fit.w > fw || fit.h > fh
-        let hdr = colour.layer.isHDR
         var k = PixelFormats.is8Bit420(frame) ? constants.eight : constants.ten
         k.params.x = sharpness
 
@@ -138,7 +136,7 @@ final class PresentEncoder: @unchecked Sendable {
             let s = spatialScaler(
                 ScalerKey(
                     inWidth: fw, inHeight: fh, outWidth: fit.w, outHeight: fit.h,
-                    format: hdr ? .rgba16Float : .bgra8Unorm)),
+                    format: .bgra8Unorm)),
             let rgb = try? pipelines(for: s.input.pixelFormat)
         {
             let rp = MTLRenderPassDescriptor()
@@ -190,14 +188,6 @@ final class PresentEncoder: @unchecked Sendable {
             enc.setViewport(MTLViewport(originX: margin, originY: margin, width: w, height: h, znear: 0, zfar: 1))
             enc.setRenderPipelineState(p.hud)
             enc.setFragmentTexture(text, index: 0)
-            // HDR reference white is 203 nits.
-            var white: Float =
-                switch colour.layer.curve {
-                case .pq: 0.58
-                case .hlg: 0.75
-                default: 1
-                }
-            enc.setFragmentBytes(&white, length: MemoryLayout<Float>.size, index: 0)
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         }
         enc.endEncoding()

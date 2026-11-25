@@ -81,7 +81,6 @@ final class RemotePlaySession: ControllerSink {
         profile.codec = switch settings.codec {
         case .h264: VR_CODEC_H264
         case .hevc: VR_CODEC_H265
-        case .hevcHDR: VR_CODEC_H265_HDR
         }
 
         let box = Unmanaged.passRetained(CallbackBox(session: self, codec: settings.codec))

@@ -69,7 +69,7 @@ enum SystemReport {
         if let mode = CGDisplayCopyDisplayMode(id) { size = "\(mode.pixelWidth)x\(mode.pixelHeight) px (\(mode.width)x\(mode.height) pt)" }
         let kind = CGDisplayIsBuiltin(id) != 0 ? "built-in" : "external"
         let marker = id == target ? " [stream target]" : ""
-        return "\(screen.localizedName) id=\(id) \(kind) \(size) refresh \(RefreshCapability.of(screen).summary) \(DisplayHDR(screen: screen).summary)\(marker)"
+        return "\(screen.localizedName) id=\(id) \(kind) \(size) refresh \(RefreshCapability.of(screen).summary)\(marker)"
     }
 
     /// How this Mac reaches the console: the local interface whose IPv4 subnet holds `host`.

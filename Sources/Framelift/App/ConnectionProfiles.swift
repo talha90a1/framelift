@@ -32,7 +32,7 @@ enum ConnectionProfile: String, Codable, CaseIterable, Identifiable {
     func defaults(preserving settings: StreamSettings = StreamSettings()) -> StreamSettings {
         var result = settings
         result.bitrateKbps = recommendedBitrate
-        result.codec = settings.codec == .hevcHDR ? .hevcHDR : .hevc
+        result.codec = .hevc
         result.protectSubtitles = true
         result.keepStaticOverlays = false
         result.blendFallback = false

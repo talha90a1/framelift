@@ -39,7 +39,6 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     /// Apple ML interpolation (VTFrameProcessor low-latency frame interpolation). Until its model
     /// is ready, real frames are shown on display cadence.
     private var llfi: AppleLLFIInterpolator?
-    private var hdrInterpolator: HDRFrameInterpolator?
     private var blender: FrameBlender?
     private var gateReason = "starting"
     private let cutDetector: SceneCutDetector?
@@ -151,7 +150,6 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
             self.pacer.reset()
             self.interpSamples = 0
             self.llfi?.reset()
-            self.hdrInterpolator?.reset()
         }
     }
 
@@ -160,7 +158,6 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
     private func rebuildBackends() {
         blender = nil
         llfi = nil
-        hdrInterpolator = nil
         interpSamples = 0
         pacer.reset()
         if internet && settings.streamFPS >= 50 {
@@ -169,21 +166,12 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         }
         guard let ctx else { setGate("none (no Metal)"); return }
         blender = try? FrameBlender(context: ctx)
-        if HDRFrameInterpolator.isSupported {
-            hdrInterpolator = try? HDRFrameInterpolator(context: ctx)
-            if settings.codec == .hevcHDR {
-                hdrInterpolator?.prepare(width: Int(settings.width), height: Int(settings.height))
-            }
-        }
         if AppleLLFIInterpolator.isSupported {
             let l = AppleLLFIInterpolator(keepWarm: settings.keepLLFIWarm)
-            if settings.codec != .hevcHDR {
-                l.prepare(width: Int(settings.width), height: Int(settings.height))
-            }
+            l.prepare(width: Int(settings.width), height: Int(settings.height))
             llfi = l
         }
-        let backend: (any FrameInterpolator)? = settings.codec == .hevcHDR ? hdrInterpolator : llfi
-        Diagnostics.shared.event("render: backend \(backend?.backendName ?? "none (Apple ML unavailable)")")
+        Diagnostics.shared.event("render: backend \(llfi?.backendName ?? "none (Apple ML unavailable)")")
     }
 
     private func displayAllowsGeneration() -> Bool {
@@ -284,31 +272,22 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         previous = frame
         records[id] = Record(frame: frame)
 
-        let hdr = frame.colourTags.hdrCurve != nil && PixelFormats.is10Bit420(frame.pixelBuffer)
-        let backend: (any FrameInterpolator)? = hdr ? hdrInterpolator : llfi
-        let supportsInterpolation = hdr || (frame.colourTags.hdrCurve == nil && PixelFormats.is8Bit420(frame.pixelBuffer))
+        let supportsInterpolation = PixelFormats.is8Bit420(frame.pixelBuffer)
         let eligible = supportsInterpolation && displayAllowsGeneration()
-        let ready = backend?.isReady(for: frame.pixelBuffer) == true
-        let priming = eligible && hdr && ready && hdrInterpolator?.isPrimed == false
-        if priming, let prev, !frame.discontinuity, prev.colourTags == frame.colourTags {
-            hdrInterpolator?.prime(previous: prev.pixelBuffer, current: frame.pixelBuffer)
-        }
-        let generating = eligible && !priming && ready
-        if priming {
-            setGate("real frames (HDR model priming)")
-        } else if !supportsInterpolation {
+        let generating = eligible && llfi?.isReady(for: frame.pixelBuffer) == true
+        if !supportsInterpolation {
             setGate("real frames (unsupported pixel format)")
         } else if eligible && !generating {
-            setGate(backend == nil ? "none (Apple ML unavailable)" : "none (Apple ML loading)")
-            backend?.prepare(width: CVPixelBufferGetWidth(frame.pixelBuffer), height: CVPixelBufferGetHeight(frame.pixelBuffer))
+            setGate(llfi == nil ? "none (Apple ML unavailable)" : "none (Apple ML loading)")
+            llfi?.prepare(width: CVPixelBufferGetWidth(frame.pixelBuffer), height: CVPixelBufferGetHeight(frame.pixelBuffer))
         }
         pacer.generatesFrames = generating
-        var interp: (any FrameInterpolator)?
+        var interp: AppleLLFIInterpolator?
         if generating, let prev, !frame.discontinuity, prev.colourTags == frame.colourTags,
-            let backend, backend.isReady(for: prev.pixelBuffer)
+            let llfi, llfi.isReady(for: prev.pixelBuffer)
         {
-            setGate(backend.backendName)
-            interp = backend
+            setGate(llfi.backendName)
+            interp = llfi
         }
         let n = interp != nil ? 1 : 0
         let decoded = HostClock.seconds(frame.decodedHostTime > 0 ? frame.decodedHostTime : HostClock.now())
@@ -324,7 +303,7 @@ final class PresentationEngine: FrameSink, PresenterClient, @unchecked Sendable 
         prune()
     }
 
-    private func startPair(id: UInt64, previous: CVPixelBuffer, current: CVPixelBuffer, interpolator: any FrameInterpolator) {
+    private func startPair(id: UInt64, previous: CVPixelBuffer, current: CVPixelBuffer, interpolator: AppleLLFIInterpolator) {
         let ep = epoch
         guard let seq = records[id]?.frame.sequence else { return }
         if !settings.sceneCutFallback { records[id]?.cut = false }

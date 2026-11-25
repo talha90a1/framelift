@@ -32,13 +32,21 @@ enum HostClock {
 // MARK: - Stream settings
 
 enum VideoCodecKind: Int, Codable, CaseIterable, Sendable {
-    case h264 = 0, hevc = 1, hevcHDR = 2
+    case h264 = 0, hevc = 1
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        switch try container.decode(Int.self) {
+        case 0: self = .h264
+        case 1, 2: self = .hevc // Legacy HDR preferences used 2.
+        default: throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unknown video codec")
+        }
+    }
 
     var label: String {
         switch self {
         case .h264: "H.264"
         case .hevc: "HEVC"
-        case .hevcHDR: "HEVC HDR"
         }
     }
 }
@@ -59,7 +67,7 @@ struct StreamSettings: Codable, Equatable, Sendable {
     /// Stream preset requested from the PS5. 30 for 30 fps games (no duplicate frames), interpolated to 60.
     var streamFPS: UInt32 = 30
     var bitrateKbps: UInt32 = 15000
-    // HEVC: sharper at the same bitrate. HEVC HDR asks for HDR; the PS5 still sends SDR when the game or its output is SDR.
+    // HEVC: sharper at the same bitrate.
     var codec: VideoCodecKind = .hevc
     /// CGDirectDisplayID of the screen to play on (TV over HDMI or built-in). nil = screen of the main window.
     var targetDisplayID: UInt32?

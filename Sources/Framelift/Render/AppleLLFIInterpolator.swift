@@ -13,17 +13,9 @@ struct InterpolationResult: @unchecked Sendable {
     var error: String?
 }
 
-protocol FrameInterpolator: AnyObject, Sendable {
-    var backendName: String { get }
-    func isReady(for buffer: CVPixelBuffer) -> Bool
-    func prepare(width: Int, height: Int)
-    func interpolate(previous: CVPixelBuffer, current: CVPixelBuffer, completion: @escaping (InterpolationResult) -> Void)
-    func reset()
-}
-
 /// VTFrameProcessor + VTLowLatencyFrameInterpolation (macOS 26+). One request in flight at a
 /// time; a request while busy fails immediately (the pacer shows the real frame instead).
-final class AppleLLFIInterpolator: FrameInterpolator, @unchecked Sendable {
+final class AppleLLFIInterpolator: @unchecked Sendable {
     var backendName: String { "Apple ML interpolation" }
 
     static var isSupported: Bool { VTLowLatencyFrameInterpolationConfiguration.isSupported }

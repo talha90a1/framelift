@@ -37,11 +37,25 @@ struct ConnectionProfilesTests {
         current.streamFPS = 60
         current.fullscreen = false
         current.targetDisplayID = 42
-        current.codec = .hevcHDR
+        current.codec = .h264
         let wired = ConnectionProfile.ethernet.defaults(preserving: current)
         #expect(wired.streamFPS == 60 && !wired.fullscreen && wired.targetDisplayID == 42)
         #expect(!wired.keepStaticOverlays && !wired.blendFallback)
-        #expect(wired.codec == .hevcHDR)
+        #expect(wired.codec == .hevc)
+    }
+
+    @Test func legacyHDRProfileUsesHEVCWithoutLosingSavedChoices() {
+        let suite = testDefaultsSuite()
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { removeTestDefaults(suite) }
+        let json = #"{"wifi":{"width":1280,"height":720,"streamFPS":30,"bitrateKbps":22000,"codec":2,"targetDisplayID":42,"fullscreen":false,"sharpness":0.8},"ethernet":{"bitrateKbps":85000,"codec":1}}"#
+        defaults.set(Data(json.utf8), forKey: "framelift.connectionProfiles.v1")
+        let profiles = ConnectionProfiles(defaults: defaults)
+        let wifi = profiles.load(.wifi, preserving: StreamSettings())
+        #expect(wifi.codec == .hevc && StreamPreset(settings: wifi) == .p720fps30)
+        #expect(wifi.bitrateKbps == 22_000 && wifi.targetDisplayID == 42)
+        #expect(!wifi.fullscreen && wifi.sharpness == 0.8)
+        #expect(profiles.load(.ethernet, preserving: wifi).bitrateKbps == 85_000)
     }
 
     @Test func changingNetworkProfilesDoesNotChangeOverlayVisibility() {

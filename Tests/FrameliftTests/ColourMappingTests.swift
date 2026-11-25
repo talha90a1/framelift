@@ -15,7 +15,7 @@ struct ColourMappingTests {
     @Test func ps5SDRMapsToBT709VideoRangeSRGB() {
         let m = ColourMapping.decide(ps5SDR, mode: .automatic)
         #expect(m == ColourMapping.standard)
-        #expect(!m.matrixAssumed && !m.layer.isHDR)
+        #expect(!m.matrixAssumed)
         #expect(m.layer.makeColorSpace()?.name == CGColorSpace.sRGB)
     }
 
@@ -36,12 +36,10 @@ struct ColourMappingTests {
             primaries: kCVImageBufferColorPrimaries_ITU_R_2020 as String,
             transfer: kCVImageBufferTransferFunction_ITU_R_709_2 as String, fullRange: false)
         let wide = ColourMapping.decide(tags, mode: .automatic)
-        #expect(wide.matrix == .bt2020 && wide.layer == LayerColourSpace(primaries: .bt2020, curve: .sRGB) && !wide.layer.isHDR)
+        #expect(wide.matrix == .bt2020 && wide.layer == LayerColourSpace(primaries: .bt2020, curve: .sRGB))
         #expect(wide.layer.makeColorSpace()?.name == CGColorSpace.itur_2020_sRGBGamma)
 
-        tags.transfer = kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String
-        let hdr = ColourMapping.decide(tags, mode: .automatic)
-        #expect(hdr.layer == LayerColourSpace(primaries: .bt2020, curve: .pq) && hdr.layer.isHDR)
+
     }
 
     @Test func manualModesPickTheCurve() {

@@ -115,15 +115,13 @@ fragment float4 copy_fragment(PresentVertexOut in [[stage_in]],
 
 // FPS HUD, drawn in the same pass (viewport = HUD rectangle, same full-screen triangle), so
 // no extra layer sits above the CAMetalLayer. Text texture: r = glyph coverage, g = red.
-// white: the code value of white text (lower on an HDR layer, where 1.0 is peak brightness).
 fragment float4 hud_fragment(PresentVertexOut in [[stage_in]],
-                             texture2d<float> text [[texture(0)]],
-                             constant float &white [[buffer(0)]])
+                             texture2d<float> text [[texture(0)]])
 {
     constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::nearest);
     const float2 t = text.sample(s, in.uv).rg;
     if (t.r > 0.5) {
-        return float4((t.g > 0.5 ? float3(1.0, 0.3, 0.3) : float3(1.0)) * white, 1.0);
+        return float4((t.g > 0.5 ? float3(1.0, 0.3, 0.3) : float3(1.0)), 1.0);
     }
     return float4(0.0, 0.0, 0.0, 0.6);
 }

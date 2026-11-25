@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Picks the YCbCr->RGB matrix, range expansion and CAMetalLayer colourspace from the stream's
 // colour tags. The shader outputs gamma-encoded code values; the layer colourspace decodes them.
-// HDR code values go to a 10-bit EDR layer tagged with the corresponding BT.2100 transfer function.
 // SDR 709 uses sRGB (~2.2), not CGColorSpace.itur_709, whose inverse camera OETF lifts shadows.
 // Missing or unknown tags: BT.709 matrix, video range, sRGB (what the PS5 sends in SDR).
 import CoreGraphics
@@ -36,12 +35,6 @@ struct ColourTags: Equatable, Sendable {
     var fullRange: Bool
 
     static let untagged = ColourTags(matrix: nil, primaries: nil, transfer: nil, fullRange: false)
-
-    var hdrCurve: LayerCurve? {
-        if transfer == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String { return .pq }
-        if transfer == kCVImageBufferTransferFunction_ITU_R_2100_HLG as String { return .hlg }
-        return nil
-    }
 
     static func read(_ buffer: CVPixelBuffer) -> ColourTags {
         func tag(_ key: CFString) -> String? {
@@ -86,9 +79,6 @@ enum LayerCurve: String, Sendable {
     case gamma24 = "gamma 2.4"
     /// Inverse BT.709 camera OETF (CGColorSpace.itur_709 / itur_2020).
     case camera709 = "709 camera"
-    /// HDR10 (SMPTE ST 2084).
-    case pq = "PQ"
-    case hlg = "HLG"
 }
 
 struct LayerColourSpace: Equatable, Sendable {
@@ -96,8 +86,6 @@ struct LayerColourSpace: Equatable, Sendable {
     var curve: LayerCurve
 
     static let sRGB = LayerColourSpace(primaries: .bt709, curve: .sRGB)
-
-    var isHDR: Bool { curve == .pq || curve == .hlg }
 
     var summary: String { "\(primaries.rawValue) primaries, \(curve.rawValue)" }
 
@@ -109,8 +97,6 @@ struct LayerColourSpace: Equatable, Sendable {
         case (.bt2020, .sRGB): return CGColorSpace(name: CGColorSpace.itur_2020_sRGBGamma)
         case (.bt2020, .camera709): return CGColorSpace(name: CGColorSpace.itur_2020)
         case (_, .gamma24): return Self.calibrated(primaries, gamma: 2.4)
-        case (_, .pq): return CGColorSpace(name: CGColorSpace.itur_2100_PQ)
-        case (_, .hlg): return CGColorSpace(name: CGColorSpace.itur_2100_HLG)
         }
     }
 
@@ -171,11 +157,6 @@ struct ColourMapping: Equatable, Sendable {
         } else {
             m.matrixAssumed = true
         }
-        if let hdr = tags.hdrCurve {
-            m.layer = LayerColourSpace(primaries: .bt2020, curve: hdr)
-            return m
-        }
-
         // 601 primaries (EBU 3213 / SMPTE C) are close enough to 709 that the sRGB tag is the safer pick.
         let primaries = tags.primaries.flatMap { Self.wideGamut[$0] } ?? .bt709
         // The stream's primaries are always kept; the mode only picks the SDR curve.
